@@ -43,6 +43,8 @@ export async function POST(request: Request) {
     const prompt = `Create a practical, non-generic event plan as JSON for ${input.eventName}. Event type: ${input.eventType}. Date: ${input.eventDate}. Location: ${input.location}. Budget: ${input.budget}. Confirmed guests: ${input.confirmedGuests}. Unsure guests: ${input.unsureGuests}. Return exactly these keys: summary (string), budgetAdvice (string), recommendations (array of strings about hotels/venues/vendors and costs in this location), risks (array of strings only if applicable to the date/location, including political events, festivals, weather or other disruptions; otherwise empty), categories (array of objects with label and amount number), milestones (array of objects with title, date, description ordered by due date and tailored to this event/date), completionWish (string). Be explicit that live prices, event calendars and weather require verification.`;
     const result = await requestGemini({
       requestId,
+      timeoutMs: 45_000,
+      maxAttempts: 2,
       body: { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.65, maxOutputTokens: 1800 } }
     });
     const { response, data } = result;

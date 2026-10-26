@@ -37,7 +37,7 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-export async function requestGemini({ body, timeoutMs = 12_000, maxAttempts = 3, requestId }: GeminiRequestOptions): Promise<GeminiResult> {
+export async function requestGemini({ body, timeoutMs = 45_000, maxAttempts = 2, requestId }: GeminiRequestOptions): Promise<GeminiResult> {
   const apiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("Gemini API key is not configured on the server.");
 
@@ -67,7 +67,7 @@ export async function requestGemini({ body, timeoutMs = 12_000, maxAttempts = 3,
       }
       await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response) ?? backoffMs(attempt)));
     } catch (error) {
-      const timedOut = error instanceof DOMException && error.name === "AbortError";
+      const timedOut = error instanceof Error && error.name === "AbortError";
       console.warn("[gemini]", JSON.stringify({ requestId, model, attempt: attempt + 1, error: timedOut ? "timeout" : "network_error", durationMs: Date.now() - startedAt }));
       if (attempt === maxAttempts - 1) throw new Error(timedOut ? "Gemini request timed out." : "Gemini request could not reach the provider.");
       await new Promise((resolve) => setTimeout(resolve, backoffMs(attempt)));
