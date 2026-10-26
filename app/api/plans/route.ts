@@ -14,12 +14,24 @@ const planSchema = z.object({
 const generatedPlanSchema = z.object({
   summary: z.string().trim().min(1).max(4000),
   budgetAdvice: z.string().trim().min(1).max(6000),
-  recommendations: z.array(z.string().trim().min(1).max(1000)).min(1).max(12),
-  risks: z.array(z.string().trim().min(1).max(1000)).max(12),
-  categories: z.array(z.object({ label: z.string().trim().min(1).max(100), amount: z.number().finite().nonnegative() })).min(1).max(12),
-  milestones: z.array(z.object({ title: z.string().trim().min(1).max(160), date: z.string().trim().min(1).max(80), description: z.string().trim().min(1).max(500) })).min(1).max(12),
+  recommendations: z.array(z.string().trim().min(1).max(1000)).max(12).default([]),
+  risks: z.array(z.string().trim().min(1).max(1000)).max(12).default([]),
+  categories: z.array(z.object({ label: z.string().trim().min(1).max(100), amount: z.coerce.number().finite().nonnegative() })).min(1).max(12),
+  milestones: z.array(z.object({ title: z.string().trim().min(1).max(160), date: z.string().trim().min(1).max(80), description: z.string().trim().min(1).max(500) })).max(12).default([]),
   completionWish: z.string().trim().min(1).max(1000)
 });
+
+function parseModelJson(text: string): unknown {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start < 0 || end <= start) throw new Error("No JSON object returned.");
+    return JSON.parse(cleaned.slice(start, end + 1));
+  }
+}
 
 export async function POST(request: Request) {
   const requestId = crypto.randomUUID();
@@ -45,7 +57,7 @@ export async function POST(request: Request) {
     const text = (modelData.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("").trim();
     if (!text) return NextResponse.json({ error: "Gemini returned no plan." }, { status: 502 });
     let plan: unknown;
-    try { plan = JSON.parse(text); } catch { return NextResponse.json({ error: "Gemini returned an invalid plan format. Please try again." }, { status: 502 }); }
+    try { plan = parseModelJson(text); } catch { return NextResponse.json({ error: "Gemini returned malformed plan JSON. Please retry once." }, { status: 502 }); }
     const validatedPlan = generatedPlanSchema.safeParse(plan);
     if (!validatedPlan.success) return NextResponse.json({ error: "Gemini returned an incomplete plan. Please try again." }, { status: 502 });
     return NextResponse.json({ input, plan: validatedPlan.data });

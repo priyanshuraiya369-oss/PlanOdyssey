@@ -18,14 +18,20 @@ export async function POST(request: Request) {
         host: process.env.SMTP_HOST,
         port: Number(process.env.SMTP_PORT ?? 587),
         secure: process.env.SMTP_SECURE === "true",
-        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 10000
       });
-      await transporter.sendMail({
+      await Promise.race([
+        transporter.sendMail({
         from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
         to: parsed.data.email,
         subject: "Your PlanOdyssey sign-in code",
         text: `Your PlanOdyssey verification code is ${otp}. It expires in 5 minutes.`
-      });
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("SMTP delivery timed out.")), 10000))
+      ]);
     }
     return NextResponse.json({ ok: true, email: parsed.data.email, demoCode: smtpConfigured ? undefined : otp });
   } catch {
