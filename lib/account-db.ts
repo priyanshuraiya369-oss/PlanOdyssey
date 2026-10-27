@@ -44,6 +44,29 @@ export function createAccount(input: { username: string; email: string; password
   return publicAccount(account);
 }
 
+export function createOrFindGoogleAccount(input: { email: string; displayName: string }) {
+  const accounts = readAccounts();
+  const email = input.email.trim().toLowerCase();
+  const existing = accounts.find((account) => account.email === email);
+  if (existing) return publicAccount(existing);
+  const base = normalizeUsername(email.split("@")[0]).replace(/[^a-z0-9_]/g, "") || "google_user";
+  let username = base;
+  let suffix = 1;
+  while (accounts.some((account) => account.username === username)) username = `${base}_${suffix++}`;
+  const { salt, hash } = hashPassword(randomBytes(32).toString("hex"));
+  const account: Account = {
+    id: accounts.length ? Math.max(...accounts.map((item) => item.id)) + 1 : 1,
+    username,
+    email,
+    passwordHash: hash,
+    salt,
+    displayName: input.displayName.trim() || username
+  };
+  accounts.push(account);
+  writeAccounts(accounts);
+  return publicAccount(account);
+}
+
 export function findAccount(username: string) {
   return readAccounts().find((account) => account.username === normalizeUsername(username));
 }

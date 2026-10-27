@@ -49,7 +49,7 @@ The previous planner path had no bounded retry policy, swallowed provider/networ
 
 The dashboard analytics are derived from the current plan's allocation total, target budget, guest count, and optional estimated-spend field. Editing allocations updates the cards and charts immediately. Validation checks required fields, numeric values, negative allocations, and over-budget totals; over-budget plans remain visibly marked with a warning rather than being presented as compliant. Drafts can be saved locally, restored from the last validated plan, and displayed in INR or USD. No timeline spending series is shown because the current response schema does not provide dated spending data.
 
-SMTP OTP delivery uses `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, and optional `SMTP_FROM`. OTPs are stored server-side and are never sent back to the browser when SMTP is configured. Account registration persists hashed passwords in the local `planodyssey.accounts.json` database file, which is ignored by Git.
+Google sign-in uses the server-only `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` variables. Add the callback URL to the Google Cloud OAuth web application before testing. Account registration and Google account linking persist hashed local account records in the local `planodyssey.accounts.json` database file, which is ignored by Git.
 
 The account modal supports username/password login, new-user registration, CAPTCHA-style challenge validation, and email OTP sign-in. Wrong credentials return a direct login error with a registration path.
 
