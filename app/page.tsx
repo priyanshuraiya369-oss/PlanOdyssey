@@ -89,6 +89,23 @@ const initials = (name: string) => name.trim().split(/\s+/).map((p) => p[0]).sli
 const sizeLabel = (bytes: number) => bytes > 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 const today = () => new Date().toISOString().slice(0, 10);
 
+/* Milestone dates must sit between today and the event. AI output often ignores today's date,
+   so if any date is invalid, out of order, in the past or after the event, re-space them evenly. */
+const DAY = 86400000;
+const isoOf = (t: number) => new Date(t).toISOString().slice(0, 10);
+function fixMilestones<T extends { date: string }>(items: T[], eventDate: string): T[] {
+  const event = Date.parse(eventDate);
+  const now = new Date();
+  const start = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  if (!items.length || Number.isNaN(event) || event <= start) return items;
+  const times = items.map((m) => Date.parse(m.date));
+  const ok = times.every((t, i) => !Number.isNaN(t) && t >= start && t <= event && (i === 0 || t >= times[i - 1]));
+  if (ok) return items;
+  const days = Math.round((event - start) / DAY);
+  const span = Math.max(days - 2, 1);
+  return items.map((m, i) => ({ ...m, date: isoOf(start + Math.min(days, Math.max(0, Math.round(span * (i + 1) / items.length))) * DAY) }));
+}
+
 function download(name: string, content: string, type: string) {
   const url = URL.createObjectURL(new Blob([content], { type }));
   const a = document.createElement("a");
@@ -236,7 +253,7 @@ export default function Dashboard() {
   };
 
   /* derived */
-  const milestones = state.milestones.map((m) => ({ ...m, status: extras.done[m.id] ? "complete" as const : m.status }));
+  const milestones = fixMilestones(state.milestones, state.eventDate).map((m) => ({ ...m, status: extras.done[m.id] ? "complete" as const : m.status }));
   const vendors: Vendor[] = [...state.vendors, ...extras.customVendors];
   const confirmed = extras.guests.filter((g) => g.rsvp === "confirmed");
   const headcount = confirmed.reduce((s, g) => s + 1 + g.plusOnes, 0);
