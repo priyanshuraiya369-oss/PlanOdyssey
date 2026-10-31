@@ -241,3 +241,35 @@ kbd { margin-left: auto; padding: 2px 7px; border-radius: 6px; border: 1px solid
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; animation-delay: 0ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
   .intro-word span { transform: none; }
 }
+
+/* ───────── Animated weather scene ───────── */
+.wx { position: relative; overflow: hidden; min-height: 210px; color: #fff; isolation: isolate; text-shadow: 0 1px 12px rgba(0, 0, 0, .25); }
+.wx-sunny { background: linear-gradient(165deg, #2a7fd1 0%, #62b2ee 58%, #f7d58a 120%); }
+.wx-cloudy { background: linear-gradient(165deg, #56708a, #8ea5ba 68%, #c3cfda); }
+.wx-rain { background: linear-gradient(165deg, #2b3d52, #476079 68%, #6a859d); }
+.wx-storm { background: linear-gradient(165deg, #15132b, #333356 66%, #50507a); }
+.wx-snow { background: linear-gradient(165deg, #6f8cab, #aec3d9 68%, #e4edf6); }
+.wx-fog { background: linear-gradient(165deg, #78838f, #a6afb8 68%, #cfd5da); }
+.wx-content { position: relative; z-index: 6; padding: 24px 26px; }
+.wx-sun, .wx-cloud, .wx-drop, .wx-flake, .wx-flash, .wx-bolt, .wx-fogband { position: absolute; pointer-events: none; }
+.wx-sun { right: 40px; top: 28px; width: 76px; height: 76px; border-radius: 50%; z-index: 2; background: radial-gradient(circle at 35% 35%, #fff6c8, #ffd45e 55%, #ffb22e); box-shadow: 0 0 0 14px rgba(255, 214, 94, .18), 0 0 64px 22px rgba(255, 200, 70, .55); animation: sunpulse 4s ease-in-out infinite; }
+.wx-sun::before { content: ""; position: absolute; inset: -36px; border-radius: 50%; background: repeating-conic-gradient(from 0deg, rgba(255, 228, 130, .7) 0 5deg, transparent 5deg 22.5deg); -webkit-mask-image: radial-gradient(circle closest-side, transparent 52%, #000 58%, #000 88%, transparent 100%); mask-image: radial-gradient(circle closest-side, transparent 52%, #000 58%, #000 88%, transparent 100%); animation: spin 26s linear infinite; }
+.wx-cloud { left: -180px; top: var(--y, 30px); width: 120px; height: 38px; border-radius: 40px; z-index: 3; background: rgba(255, 255, 255, .93); filter: drop-shadow(0 8px 14px rgba(0, 0, 0, .12)); transform: scale(var(--s, 1)); animation: drift var(--t, 40s) linear infinite; animation-delay: var(--d, 0s); }
+.wx-cloud::before, .wx-cloud::after { content: ""; position: absolute; border-radius: 50%; background: inherit; }
+.wx-cloud::before { width: 56px; height: 56px; top: -28px; left: 18px; }
+.wx-cloud::after { width: 44px; height: 44px; top: -20px; left: 64px; }
+.wx-rain .wx-cloud, .wx-snow .wx-cloud { background: rgba(88, 104, 124, .96); }
+.wx-storm .wx-cloud { background: rgba(52, 54, 86, .97); }
+.wx-drop { z-index: 4; top: -24px; left: var(--x); width: 2px; height: 18px; border-radius: 2px; background: linear-gradient(transparent, rgba(196, 224, 255, .95)); transform: rotate(12deg); animation: fall var(--s, .9s) linear infinite; animation-delay: var(--d, 0s); }
+.wx-flake { z-index: 4; top: -12px; left: var(--x); width: 6px; height: 6px; border-radius: 50%; background: #fff; opacity: .9; animation: snowfall var(--s, 7s) linear infinite; animation-delay: var(--d, 0s); }
+.wx-flash { inset: 0; z-index: 5; background: #fff; opacity: 0; animation: flash 6s infinite; }
+.wx-bolt { z-index: 5; right: 110px; top: 66px; width: 38px; height: 78px; background: #ffe27a; opacity: 0; clip-path: polygon(55% 0, 8% 56%, 44% 56%, 28% 100%, 92% 38%, 56% 38%); filter: drop-shadow(0 0 14px #ffe27a); animation: bolt 6s infinite; }
+.wx-fogband { z-index: 3; left: -20%; right: -20%; top: var(--y, 60px); height: 46px; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .5), transparent); filter: blur(7px); animation: fogmove 16s ease-in-out infinite alternate; animation-delay: var(--d, 0s); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes sunpulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+@keyframes drift { from { left: -180px; } to { left: 105%; } }
+@keyframes fall { to { transform: translate(-30px, 290px) rotate(12deg); } }
+@keyframes snowfall { 0% { transform: translate(0, 0); } 50% { transform: translate(16px, 130px); } 100% { transform: translate(-10px, 280px); } }
+@keyframes flash { 0%, 86%, 100% { opacity: 0; } 87% { opacity: .7; } 88% { opacity: .05; } 89% { opacity: .55; } 92% { opacity: 0; } }
+@keyframes bolt { 0%, 86%, 93%, 100% { opacity: 0; } 87%, 89%, 91% { opacity: 1; } 88%, 90% { opacity: .2; } }
+@keyframes fogmove { from { transform: translateX(-8%); } to { transform: translateX(8%); } }

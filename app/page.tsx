@@ -1130,41 +1130,102 @@ function ReadinessCard({ r, go }: { r: Readiness; go: (v: View) => void }) {
   );
 }
 
-type Weather = { available: boolean; mode?: "forecast" | "historical"; place?: string; tempMax?: number; tempMin?: number; rainChance?: number; wind?: number; code?: number; error?: string; daysAway?: number };
-function weatherLabel(code?: number) {
-  if (code === undefined) return "";
-  if (code === 0) return "Clear skies";
-  if (code <= 3) return "Partly cloudy";
-  if (code === 45 || code === 48) return "Foggy";
-  if (code >= 51 && code <= 67) return "Rain likely";
-  if (code >= 71 && code <= 77) return "Snow";
-  if (code >= 80 && code <= 82) return "Showers";
-  if (code >= 95) return "Thunderstorms";
-  return "Mixed conditions";
+type Weather = { available: boolean; mode?: "forecast" | "historical"; place?: string; tempMax?: number; tempMin?: number; rainChance?: number; wind?: number; code?: number; error?: string; detail?: string; daysAway?: number };
+type Sky = "sunny" | "cloudy" | "rain" | "storm" | "snow" | "fog";
+const SKY_LABEL: Record<Sky, string> = { sunny: "Sunny and clear", cloudy: "Cloudy skies", rain: "Rainy", storm: "Thunderstorms", snow: "Snowfall", fog: "Foggy" };
+function skyOf(w: Weather): Sky {
+  const c = w.code;
+  if (c !== undefined) {
+    if (c >= 95) return "storm";
+    if ((c >= 71 && c <= 77) || c === 85 || c === 86) return "snow";
+    if (c === 45 || c === 48) return "fog";
+    if ((c >= 51 && c <= 67) || (c >= 80 && c <= 82)) return "rain";
+    return c <= 1 ? "sunny" : "cloudy";
+  }
+  const rain = w.rainChance ?? 0;
+  return rain >= 60 ? "rain" : rain >= 30 ? "cloudy" : "sunny";
+}
+const CLOUDS: Record<Sky, { y: number; s: number; t: number; d: number }[]> = {
+  sunny: [{ y: 40, s: 0.8, t: 48, d: -12 }, { y: 120, s: 0.55, t: 64, d: -40 }],
+  cloudy: [{ y: 28, s: 1.1, t: 42, d: -8 }, { y: 84, s: 0.8, t: 55, d: -30 }, { y: 130, s: 1, t: 50, d: -20 }, { y: 60, s: 0.65, t: 70, d: -50 }],
+  rain: [{ y: 24, s: 1.2, t: 46, d: -10 }, { y: 70, s: 1, t: 58, d: -34 }, { y: 36, s: 0.8, t: 66, d: -48 }],
+  storm: [{ y: 20, s: 1.3, t: 52, d: -14 }, { y: 66, s: 1.1, t: 62, d: -38 }, { y: 30, s: 0.9, t: 72, d: -54 }],
+  snow: [{ y: 26, s: 1.1, t: 56, d: -16 }, { y: 76, s: 0.9, t: 68, d: -40 }],
+  fog: []
+};
+function WeatherScene({ sky, children }: { sky: Sky; children: React.ReactNode }) {
+  const drops = sky === "rain" ? 34 : sky === "storm" ? 46 : 0;
+  const flakes = sky === "snow" ? 32 : 0;
+  const style = (v: Record<string, string | number>) => v as React.CSSProperties;
+  return (
+    <div className={`wx wx-${sky}`} role="img" aria-label={SKY_LABEL[sky]}>
+      {sky === "sunny" && <div className="wx-sun" />}
+      {CLOUDS[sky].map((c, i) => <div key={i} className="wx-cloud" style={style({ "--y": `${c.y}px`, "--s": c.s, "--t": `${c.t}s`, "--d": `${c.d}s` })} />)}
+      {Array.from({ length: drops }, (_, i) => <i key={`d${i}`} className="wx-drop" style={style({ "--x": `${(i * 37) % 100}%`, "--d": `${-((i * 53) % 90) / 100}s`, "--s": `${sky === "storm" ? 0.65 + (i % 4) * 0.08 : 0.85 + (i % 4) * 0.1}s` })} />)}
+      {Array.from({ length: flakes }, (_, i) => <i key={`f${i}`} className="wx-flake" style={style({ "--x": `${(i * 31) % 100}%`, "--d": `${-((i * 47) % 70) / 10}s`, "--s": `${6 + (i % 5)}s` })} />)}
+      {sky === "storm" && <><div className="wx-flash" /><div className="wx-bolt" /></>}
+      {sky === "fog" && [0, 1, 2].map((i) => <div key={i} className="wx-fogband" style={style({ "--y": `${40 + i * 52}px`, "--d": `${-i * 4}s` })} />)}
+      <div className="wx-content">{children}</div>
+    </div>
+  );
 }
 function WeatherCard({ city, date }: { city: string; date: string }) {
   const [w, setW] = useState<Weather | null>(null);
   const [loading, setLoading] = useState(true);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let off = false;
     setLoading(true);
-    fetch(`/api/weather?city=${encodeURIComponent(city)}&date=${encodeURIComponent(date)}`).then((r) => r.json()).then((d: Weather) => { if (!off) setW(d); })
-      .catch(() => { if (!off) setW({ available: false, error: "Weather is temporarily unavailable." }); }).finally(() => { if (!off) setLoading(false); });
+    fetch(`/api/weather?city=${encodeURIComponent(city)}&date=${encodeURIComponent(date)}`)
+      .then(async (r) => {
+        try { return (await r.json()) as Weather; } catch { return { available: false, error: `The weather route was not found (HTTP ${r.status}). Check that app/api/weather/route.ts exists, then restart the dev server.` } as Weather; }
+      })
+      .then((d) => { if (!off) setW(d); })
+      .catch(() => { if (!off) setW({ available: false, error: "Could not reach the weather route. Check your connection." }); })
+      .finally(() => { if (!off) setLoading(false); });
     return () => { off = true; };
-  }, [city, date]);
+  }, [city, date, tick]);
   const hist = w?.mode === "historical";
+  const sky = w ? skyOf(w) : "cloudy";
+  const rain = w?.rainChance ?? 0;
+  const advice = sky === "storm" ? "Thunderstorms are possible. Keep an indoor option ready and secure lighting and decor."
+    : rain >= 40 || sky === "rain" ? "Rain is likely. Plan a covered backup for outdoor moments."
+    : (w?.tempMax ?? 0) >= 36 ? "It will be hot. Arrange shade, water and cooling for guests."
+    : (w?.tempMax ?? 99) <= 10 ? "It will be cold. Arrange heaters and warm drinks."
+    : "Conditions look comfortable for the day.";
   return (
-    <section className="card card-pad">
-      <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-xl" style={{ background: "var(--gold-soft)", color: "var(--gold-deep)" }}><CloudSun size={22} /></div><div><h2 className="display text-2xl">Weather outlook</h2><p className="muted text-xs">{w?.place ?? city}</p></div></div>{w?.available && <span className={`chip ${hist ? "chip-gold" : "chip-teal"}`}>{hist ? "Typical for this date" : "Live forecast"}</span>}</div>
-      {loading ? <p className="muted mt-6 text-sm">Checking conditions…</p> : w?.available ? (
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="inset p-4"><p className="muted text-xs">High</p><p className="display tnum mt-1 text-2xl">{w.tempMax !== undefined ? `${Math.round(w.tempMax)}°C` : "–"}</p></div>
-          <div className="inset p-4"><p className="muted text-xs">Low</p><p className="display tnum mt-1 text-2xl">{w.tempMin !== undefined ? `${Math.round(w.tempMin)}°C` : "–"}</p></div>
-          <div className="inset p-4"><p className="muted text-xs">{hist ? "Rain in past years" : "Rain chance"}</p><p className="display tnum mt-1 text-2xl">{w.rainChance !== undefined ? `${Math.round(w.rainChance)}%` : "–"}</p></div>
-          <div className="inset p-4"><p className="muted text-xs">Wind</p><p className="display tnum mt-1 text-2xl">{w.wind !== undefined ? `${Math.round(w.wind)} km/h` : "–"}</p></div>
-          <p className="muted col-span-full text-xs leading-5">{hist ? "A live forecast opens 15 days before the event. This is the average of the same date over the last 3 years." : weatherLabel(w.code)}{(w.rainChance ?? 0) >= 40 && " Plan a covered backup for outdoor moments."}</p>
+    <section className="card overflow-hidden">
+      {loading ? (
+        <div className="card-pad"><div className="flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-xl" style={{ background: "var(--gold-soft)", color: "var(--gold-deep)" }}><CloudSun size={22} /></div><h2 className="display text-2xl">Weather outlook</h2></div><p className="muted mt-5 text-sm">Checking conditions…</p></div>
+      ) : w?.available ? (
+        <>
+          <WeatherScene sky={sky}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold opacity-90">{w.place} · {fmtDate(date)}</p>
+                <p className="display tnum mt-3 text-6xl leading-none">{w.tempMax !== undefined ? Math.round(w.tempMax) : "–"}°<span className="text-2xl">C</span></p>
+                <p className="mt-2 text-lg font-semibold">{hist ? "Likely " : ""}{hist ? SKY_LABEL[sky].toLowerCase() : SKY_LABEL[sky]}</p>
+                <p className="text-sm opacity-90">High {w.tempMax !== undefined ? Math.round(w.tempMax) : "–"}° · Low {w.tempMin !== undefined ? Math.round(w.tempMin) : "–"}°</p>
+              </div>
+              <span className="chip" style={{ background: "rgba(255,255,255,.22)", color: "#fff" }}>{hist ? "Typical for this date" : "Live forecast"}</span>
+            </div>
+          </WeatherScene>
+          <div className="card-pad">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="inset p-4"><p className="muted text-xs">{hist ? "Rain in past years" : "Rain chance"}</p><p className="display tnum mt-1 text-2xl">{w.rainChance !== undefined ? `${Math.round(w.rainChance)}%` : "–"}</p></div>
+              <div className="inset p-4"><p className="muted text-xs">Wind</p><p className="display tnum mt-1 text-2xl">{w.wind !== undefined ? `${Math.round(w.wind)} km/h` : "–"}</p></div>
+            </div>
+            <p className="muted mt-4 text-xs leading-5">{advice}{hist && " A live forecast opens 15 days before the event; until then this is the average for the same date over recent years."}</p>
+          </div>
+        </>
+      ) : (
+        <div className="card-pad">
+          <div className="flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-xl" style={{ background: "var(--gold-soft)", color: "var(--gold-deep)" }}><CloudSun size={22} /></div><h2 className="display text-2xl">Weather outlook</h2></div>
+          <p className="muted mt-5 text-sm leading-6">{w?.error ?? "No weather data is available for this date yet."}</p>
+          {w?.detail && <p className="muted mt-2 text-xs">Details: {w.detail}</p>}
+          <button className="btn btn-sm mt-4" onClick={() => setTick((t) => t + 1)}><RotateCcw size={14} />Try again</button>
         </div>
-      ) : <p className="muted mt-6 text-sm leading-6">{w?.error ?? "No weather data is available for this date yet."}</p>}
+      )}
     </section>
   );
 }
