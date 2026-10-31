@@ -178,16 +178,13 @@ export default function Dashboard() {
   const [hydrated, setHydrated] = useState(false);
   const [view, setView] = useState<View>("Overview");
   const [modal, setModalState] = useState<Modal>(null);
-  const pendingCreate = useRef(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [palette, setPalette] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [lightbox, setLightbox] = useState<Photo | null>(null);
   const [introOn, setIntroOn] = useState(true);
   const [introLeaving, setIntroLeaving] = useState(false);
-  const [signedIn, setSignedIn] = useState(false);
   const [toast, setToast] = useState("");
-  const [profile, setProfile] = useState({ name: "Guest", email: "" });
   const toastTimer = useRef<number | undefined>(undefined);
 
   const health = useMemo(() => getBudgetHealth(state), [state]);
@@ -195,15 +192,8 @@ export default function Dashboard() {
   const isDirty = useMemo(() => JSON.stringify(state) !== JSON.stringify(lastValidatedPlan), [state, lastValidatedPlan]);
   const patch = (p: Partial<Extras>) => setExtras((c) => ({ ...c, ...p }));
   const notify = useCallback((message: string) => { setToast(message); window.clearTimeout(toastTimer.current); toastTimer.current = window.setTimeout(() => setToast(""), 3200); }, []);
-  /* Creating a plan requires an account: guests are sent to sign in first. */
-  const setModal = (m: Modal) => {
-    if (m === "create-plan" && !signedIn) { pendingCreate.current = true; notify("Please sign in to create a plan."); setModalState("auth"); return; }
-    setModalState(m);
-  };
-  const logout = () => {
-    void fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
-    setSignedIn(false); setProfile({ name: "Guest", email: "" }); setModalState(null); notify("You have been logged out.");
-  };
+  /* Open requested dashboard modals directly. Account sign-in is not required. */
+  const setModal = (m: Modal) => setModalState(m);
 
   /* hydrate saved data after mount (avoids SSR mismatch) */
   useEffect(() => {
@@ -218,13 +208,6 @@ export default function Dashboard() {
   /* opening sequence */
   const endIntro = useCallback(() => { setIntroLeaving(true); window.setTimeout(() => setIntroOn(false), 950); }, []);
   useEffect(() => { const t = window.setTimeout(endIntro, 2600); return () => window.clearTimeout(t); }, [endIntro]);
-
-  /* session */
-  useEffect(() => {
-    const authError = new URLSearchParams(window.location.search).get("authError");
-    if (authError) notify(authError);
-    void fetch("/api/auth/session").then((r) => r.json()).then((d: { signedIn?: boolean; profile?: { name: string; email: string } }) => { if (d.signedIn && d.profile) { setSignedIn(true); setProfile(d.profile); } }).catch(() => undefined);
-  }, [notify]);
 
   /* shortcuts */
   useEffect(() => {
@@ -374,11 +357,6 @@ export default function Dashboard() {
           <div className="mt-auto space-y-1">
             <button onClick={toggleTheme} className="nav-item">{extras.theme === "light" ? <Moon size={18} /> : <Sun size={18} />}{extras.theme === "light" ? "Dark theme" : "Light theme"}</button>
             <button onClick={() => setModal("settings")} className="nav-item"><Settings2 size={18} />Settings</button>
-            <button onClick={() => setModal("profile")} className="mt-3 flex w-full items-center gap-3 rounded-2xl border border-white/10 bg-white/5 p-3 text-left text-white hover:bg-white/10">
-              <div className="grid h-10 w-10 place-items-center rounded-full text-sm font-bold text-[#2a1b04]" style={{ background: "#f3b44f" }}>{initials(profile.name)}</div>
-              <div className="min-w-0"><p className="truncate text-sm font-bold">{profile.name}</p><p className="text-xs text-white/55">{signedIn ? "Verified profile" : "Guest profile"}</p></div>
-              <MoreHorizontal size={17} className="ml-auto text-white/50" />
-            </button>
           </div>
         </aside>
         {mobileNav && <button aria-label="Close menu overlay" className="fixed inset-0 z-[55] bg-black/50" onClick={() => setMobileNav(false)} />}
@@ -392,9 +370,6 @@ export default function Dashboard() {
               <button className="icon-btn hidden sm:grid" onClick={toggleTheme} aria-label="Toggle theme">{extras.theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
               <button className="icon-btn" onClick={() => { setAlertsOpen(true); patch({ alertsRead: true }); }} aria-label="View plan alerts"><Bell size={17} />{!extras.alertsRead && alerts.length > 0 && <span className="absolute right-2 top-2 h-2 w-2 rounded-full" style={{ background: "var(--rose)" }} />}</button>
               <button className="btn btn-sm hidden sm:inline-flex" onClick={() => setModal("share")}><Share2 size={15} />Share</button>
-              {signedIn
-                ? <button onClick={logout} className="btn btn-sm"><LogOut size={15} />Log out</button>
-                : <button onClick={() => setModal("auth")} className="btn btn-sm"><UserRound size={15} />Sign in</button>}
               <button onClick={() => setModal("chat")} className="btn btn-primary btn-sm"><Sparkles size={15} />Ask Odyssey</button>
             </div>
           </header>
@@ -438,12 +413,10 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-      {modal === "auth" && <AuthModal onClose={() => { pendingCreate.current = false; setModalState(null); }} onSignedIn={(p) => { setProfile(p); setSignedIn(true); setModalState(pendingCreate.current ? "create-plan" : null); pendingCreate.current = false; notify("You are signed in."); }} />}
       {modal === "subscription" && <SubscriptionModal onClose={() => setModal(null)} onPaid={() => { setModal("chat"); notify("Demo Pro access unlocked for 180 seconds."); }} />}
       {modal === "chat" && <ChatModal onClose={() => setModal(null)} onPaywall={() => setModal("subscription")} context={aiContext} />}
       {modal === "create-plan" && <CreatePlanModal onClose={() => setModal(null)} onCreated={(p, ros, tasks) => { applyGeneratedPlan(p, ros, tasks); setModal(null); }} />}
-      {modal === "settings" && <SettingsModal theme={extras.theme} setTheme={(t) => patch({ theme: t })} onClose={() => setModal(null)} signedIn={signedIn} onLogout={logout} onReset={() => { patch({ ...DEFAULT_EXTRAS, theme: extras.theme }); setModal(null); notify("Guests, tasks, expenses and documents were reset."); }} />}
-      {modal === "profile" && <ProfileModal profile={profile} signedIn={signedIn} onClose={() => setModal(null)} onSignIn={() => setModal("auth")} onLogout={logout} />}
+      {modal === "settings" && <SettingsModal theme={extras.theme} setTheme={(t) => patch({ theme: t })} onClose={() => setModal(null)} onReset={() => { patch({ ...DEFAULT_EXTRAS, theme: extras.theme }); setModal(null); notify("Guests, tasks, expenses and documents were reset."); }} />}
       {modal === "feedback" && <FeedbackModal onClose={() => setModal(null)} onDone={() => { setModal(null); notify("Thanks — your idea was added to the improvement queue."); }} />}
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
       {modal === "share" && <ShareModal onClose={() => setModal(null)} onJson={exportPlan} onBrief={exportBrief} notify={notify} onIcs={exportIcs} gcalUrl={gcalUrl} />}
@@ -987,8 +960,17 @@ function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const update = (key: keyof typeof form, value: string) => setForm((c) => ({ ...c, [key]: value }));
   const submit = async () => {
     if (loading) return;
-    if (!form.eventName.trim() || !form.eventDate || !form.location.trim()) return setError("Add an event name, date and place to continue.");
-    setLoading(true); setError("");
+    if (!form.eventName.trim() || !form.eventDate || !form.location.trim()) {
+      return setError("Add an event name, date and place to continue.");
+    }
+
+    // Prevent past event dates
+    if (form.eventDate < today()) {
+      return setError("Event date cannot be in the past. Please select today or a future date.");
+    }
+
+    setLoading(true);
+    setError("");
     try {
       const response = await fetch("/api/plans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, budget: Number(form.budget), confirmedGuests: Number(form.confirmedGuests), unsureGuests: Number(form.unsureGuests) }) });
       const data = await response.json();
@@ -1023,7 +1005,17 @@ function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreate
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <label className="label sm:col-span-2">Event name<input className="field" value={form.eventName} onChange={(e) => update("eventName", e.target.value)} placeholder="Maya's Jaipur wedding" /></label>
         <label className="label">Event type<select className="field" value={form.eventType} onChange={(e) => update("eventType", e.target.value)}>{["Wedding", "Birthday", "Community", "Corporate", "Other"].map((t) => <option key={t}>{t}</option>)}</select></label>
-        <label className="label">Event date<input type="date" className="field" value={form.eventDate} onChange={(e) => update("eventDate", e.target.value)} /></label>
+        <label className="label">
+          Event date
+          <input
+            type="date"
+            className="field"
+            min={today()}
+            value={form.eventDate}
+            onChange={(e) => update("eventDate", e.target.value)}
+            required
+          />
+        </label>
         <label className="label">Budget<input type="number" min="1000" className="field" value={form.budget} onChange={(e) => update("budget", e.target.value)} /></label>
         <label className="label">Confirmed guests<input type="number" min="0" className="field" value={form.confirmedGuests} onChange={(e) => update("confirmedGuests", e.target.value)} /></label>
         <label className="label">Not-sure guests<input type="number" min="0" className="field" value={form.unsureGuests} onChange={(e) => update("unsureGuests", e.target.value)} /></label>
@@ -1081,7 +1073,7 @@ function ChatModal({ onClose, onPaywall, context }: { onClose: () => void; onPay
   );
 }
 
-function SettingsModal({ theme, setTheme, onClose, onLogout, onReset, signedIn }: { signedIn: boolean; theme: "light" | "dark"; setTheme: (t: "light" | "dark") => void; onClose: () => void; onLogout: () => void; onReset: () => void }) {
+function SettingsModal({ theme, setTheme, onClose, onReset }: { theme: "light" | "dark"; setTheme: (t: "light" | "dark") => void; onClose: () => void; onReset: () => void }) {
   const [reminders, setReminders] = useState(true);
   return (
     <ModalShell title="Settings" onClose={onClose}>
@@ -1089,17 +1081,7 @@ function SettingsModal({ theme, setTheme, onClose, onLogout, onReset, signedIn }
         <div className="inset flex items-center justify-between gap-3 p-4"><div className="flex items-center gap-3"><Sun size={18} style={{ color: "var(--gold-deep)" }} /><div><p className="text-sm font-bold">Appearance</p><p className="muted text-xs">Light or dark workspace</p></div></div><div className="tabs"><button className="tab" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>Light</button><button className="tab" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>Dark</button></div></div>
         <label className="inset flex cursor-pointer items-center justify-between gap-3 p-4"><div className="flex items-center gap-3"><Bell size={18} style={{ color: "var(--gold-deep)" }} /><div><p className="text-sm font-bold">Planning reminders</p><p className="muted text-xs">Weekly runway nudges</p></div></div><input type="checkbox" className="tick" checked={reminders} onChange={(e) => setReminders(e.target.checked)} /></label>
         <button onClick={onReset} className="btn btn-block justify-start"><RotateCcw size={17} />Reset guests, tasks, expenses and documents</button>
-        {signedIn && <button onClick={onLogout} className="btn btn-danger btn-block justify-start"><LogOut size={17} />Log out</button>}
       </div>
-    </ModalShell>
-  );
-}
-
-function ProfileModal({ profile, signedIn, onClose, onSignIn, onLogout }: { profile: { name: string; email: string }; signedIn: boolean; onClose: () => void; onSignIn: () => void; onLogout: () => void }) {
-  return (
-    <ModalShell title="Your profile" onClose={onClose}>
-      <div className="inset mt-6 flex items-center gap-4 p-4"><div className="grid h-14 w-14 place-items-center rounded-full text-lg font-bold text-[#2a1b04]" style={{ background: "#f3b44f" }}>{signedIn ? initials(profile.name) : <UserRound size={22} />}</div><div><p className="font-bold">{signedIn ? profile.name : "Guest"}</p><p className="muted mt-1 flex items-center gap-1 text-xs">{signedIn ? <><Mail size={12} />{profile.email}</> : "You are browsing as a guest"}</p></div></div>
-      {signedIn ? <button onClick={onLogout} className="btn btn-danger btn-block mt-5"><LogOut size={16} />Log out</button> : <><p className="muted mt-5 text-sm leading-6">Sign in to create AI event plans and keep your profile.</p><button onClick={onSignIn} className="btn btn-primary btn-block mt-4">Sign in or register</button></>}
     </ModalShell>
   );
 }
