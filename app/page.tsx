@@ -2,16 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowUpRight, Bell, CalendarDays, Check, ChevronRight, CircleHelp, Clock3, Command, Copy, CreditCard, Download,
+  Armchair, ArrowUpRight, Bell, CalendarDays, Check, ChevronRight, CircleHelp, Clock3, CloudSun, Command, Copy, CreditCard, Download,
   FileText, Globe2, Heart, Home, Images, IndianRupee, ListChecks, LogOut, Mail, MapPin, MessageCircle, Moon,
   MoreHorizontal, Phone, Plus, Printer, RotateCcw, Search, Send, Settings2, Share2, Sparkles, Star, Sun,
   TicketCheck, Trash2, TrendingUp, Upload, UserRound, Users, X
 } from "lucide-react";
+import { buildIcs, googleCalendarUrl } from "@/lib/calendar";
+import { scheduleMilestones } from "@/lib/schedule";
 import { buildPlanMilestones, formatCurrency, getBudgetAnalytics, getBudgetHealth, INITIAL_STATE } from "@/lib/planner-engine";
 import type { BudgetCategory, Currency, Milestone, PlannerState } from "@/lib/types";
 
 /* ───────────────────────────── Types ───────────────────────────── */
-type View = "Overview" | "Budget" | "Guests" | "Vendors" | "Timeline" | "Checklist" | "Documents" | "Inspiration";
+type View = "Overview" | "Budget" | "Guests" | "Seating" | "Vendors" | "Timeline" | "Day plan" | "Checklist" | "Invitations" | "Documents" | "Inspiration";
 type Modal = "auth" | "subscription" | "chat" | "create-plan" | "settings" | "profile" | "feedback" | "help" | "share" | null;
 type AuthStage = "login" | "register";
 type Rsvp = "confirmed" | "pending" | "declined";
@@ -21,10 +23,13 @@ type Guest = { id: string; name: string; group: string; meal: string; rsvp: Rsvp
 type Task = { id: string; title: string; due: string; done: boolean };
 type Doc = { id: string; name: string; kind: string; size: string; added: string };
 type Expense = { id: string; label: string; categoryId: string; amount: number; date: string };
+type RosItem = { id: string; time: string; title: string; detail: string };
+type Readiness = { score: number; parts: { label: string; pct: number }[]; tip: { text: string; view: View; cta: string } };
 type Photo = { id: string; title: string; tag: string; src: string };
 type Extras = {
   guests: Guest[]; tasks: Task[]; docs: Doc[]; expenses: Expense[]; done: Record<string, boolean>;
   vstatus: Record<string, VStatus>; customVendors: Vendor[]; pins: string[]; theme: "light" | "dark"; alertsRead: boolean;
+  ros: RosItem[]; seating: Record<string, number>; tables: number; invite: string;
 };
 type Analytics = ReturnType<typeof getBudgetAnalytics>;
 
@@ -49,7 +54,8 @@ const PHOTOS: Photo[] = [
 ];
 const NAV: { label: View; icon: typeof Home }[] = [
   { label: "Overview", icon: Home }, { label: "Budget", icon: IndianRupee }, { label: "Guests", icon: Users },
-  { label: "Vendors", icon: Sparkles }, { label: "Timeline", icon: CalendarDays }, { label: "Checklist", icon: ListChecks },
+  { label: "Seating", icon: Armchair }, { label: "Vendors", icon: Sparkles }, { label: "Timeline", icon: CalendarDays },
+  { label: "Day plan", icon: Clock3 }, { label: "Checklist", icon: ListChecks }, { label: "Invitations", icon: Mail },
   { label: "Documents", icon: FileText }, { label: "Inspiration", icon: Images }
 ];
 const UTILITY: { label: string; icon: typeof Home; modal: Modal }[] = [
@@ -59,7 +65,7 @@ const UTILITY: { label: string; icon: typeof Home; modal: Modal }[] = [
   { label: "Contact us", icon: Phone, modal: "help" }
 ];
 const DEFAULT_EXTRAS: Extras = {
-  guests: [], docs: [], expenses: [], done: {}, vstatus: {}, customVendors: [], pins: ["p1", "p5"], theme: "light", alertsRead: false,
+  guests: [], docs: [], expenses: [], done: {}, vstatus: {}, customVendors: [], pins: ["p1", "p5"], theme: "light", alertsRead: false, ros: [], seating: {}, tables: 10, invite: "",
   tasks: [
     { id: "t1", title: "Lock the venue and pay the booking advance", due: "", done: false },
     { id: "t2", title: "Send save-the-date messages", due: "", done: false },
@@ -86,21 +92,20 @@ const initials = (name: string) => name.trim().split(/\s+/).map((p) => p[0]).sli
 const sizeLabel = (bytes: number) => bytes > 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 const today = () => new Date().toISOString().slice(0, 10);
 
-/* Milestone dates must sit between today and the event. AI output often ignores today's date,
-   so if any date is invalid, out of order, in the past or after the event, re-space them evenly. */
-const DAY = 86400000;
-const isoOf = (t: number) => new Date(t).toISOString().slice(0, 10);
-function fixMilestones<T extends { date: string }>(items: T[], eventDate: string): T[] {
-  const event = Date.parse(eventDate);
-  const now = new Date();
-  const start = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  if (!items.length || Number.isNaN(event) || event <= start) return items;
-  const times = items.map((m) => Date.parse(m.date));
-  const ok = times.every((t, i) => !Number.isNaN(t) && t >= start && t <= event && (i === 0 || t >= times[i - 1]));
-  if (ok) return items;
-  const days = Math.round((event - start) / DAY);
-  const span = Math.max(days - 2, 1);
-  return items.map((m, i) => ({ ...m, date: isoOf(start + Math.min(days, Math.max(0, Math.round(span * (i + 1) / items.length))) * DAY) }));
+const fmtShort = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" }) : d;
+const askAI = async (prompt: string, context = ""): Promise<string> => {
+  const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: prompt, history: [], context }) });
+  const data = await response.json() as { answer?: string; error?: string };
+  if (!response.ok || !data.answer) throw new Error(data.error || "The AI request failed. Please try again.");
+  return data.answer;
+};
+function normTime(t: string) {
+  const m = /(\d{1,2})[:.](\d{2})\s*(am|pm)?/i.exec(t);
+  if (!m) return "09:00";
+  let h = Number(m[1]); const ap = m[3]?.toLowerCase();
+  if (ap === "pm" && h < 12) h += 12;
+  if (ap === "am" && h === 12) h = 0;
+  return `${String(Math.min(h, 23)).padStart(2, "0")}:${m[2]}`;
 }
 
 function download(name: string, content: string, type: string) {
@@ -172,7 +177,8 @@ export default function Dashboard() {
   const [extras, setExtras] = useState<Extras>(DEFAULT_EXTRAS);
   const [hydrated, setHydrated] = useState(false);
   const [view, setView] = useState<View>("Overview");
-  const [modal, setModal] = useState<Modal>(null);
+  const [modal, setModalState] = useState<Modal>(null);
+  const pendingCreate = useRef(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [palette, setPalette] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -181,7 +187,7 @@ export default function Dashboard() {
   const [introLeaving, setIntroLeaving] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [toast, setToast] = useState("");
-  const [profile, setProfile] = useState({ name: "Priyanshu Raiya", email: "priyanshu@example.com" });
+  const [profile, setProfile] = useState({ name: "Guest", email: "" });
   const toastTimer = useRef<number | undefined>(undefined);
 
   const health = useMemo(() => getBudgetHealth(state), [state]);
@@ -189,6 +195,15 @@ export default function Dashboard() {
   const isDirty = useMemo(() => JSON.stringify(state) !== JSON.stringify(lastValidatedPlan), [state, lastValidatedPlan]);
   const patch = (p: Partial<Extras>) => setExtras((c) => ({ ...c, ...p }));
   const notify = useCallback((message: string) => { setToast(message); window.clearTimeout(toastTimer.current); toastTimer.current = window.setTimeout(() => setToast(""), 3200); }, []);
+  /* Creating a plan requires an account: guests are sent to sign in first. */
+  const setModal = (m: Modal) => {
+    if (m === "create-plan" && !signedIn) { pendingCreate.current = true; notify("Please sign in to create a plan."); setModalState("auth"); return; }
+    setModalState(m);
+  };
+  const logout = () => {
+    void fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    setSignedIn(false); setProfile({ name: "Guest", email: "" }); setModalState(null); notify("You have been logged out.");
+  };
 
   /* hydrate saved data after mount (avoids SSR mismatch) */
   useEffect(() => {
@@ -243,14 +258,19 @@ export default function Dashboard() {
   };
   const restorePlan = () => { setState(lastValidatedPlan); notify("Restored the previous validated plan."); };
   const saveDraft = () => { window.localStorage.setItem(PLAN_KEY, JSON.stringify(state)); notify("Draft saved on this device. Validate it to confirm the plan."); };
-  const applyGeneratedPlan = (plan: Partial<PlannerState>) => {
+  const applyGeneratedPlan = (plan: Partial<PlannerState>, ros?: { time: string; title: string; detail: string }[], tasks?: string[]) => {
     const next = { ...state, spent: 0, ...plan };
     if (!plan.milestones) next.milestones = buildPlanMilestones(next.eventDate, next.eventType);
-    setExtras((c) => ({ ...c, done: {} })); setState(next); validatePlan(next);
+    setExtras((c) => ({
+      ...c, done: {},
+      ros: ros?.length ? ros.map((r) => ({ id: uid(), time: normTime(r.time), title: r.title, detail: r.detail })) : c.ros,
+      tasks: tasks?.length ? tasks.map((t) => ({ id: uid(), title: t, due: "", done: false })) : c.tasks
+    }));
+    setState(next); validatePlan(next);
   };
 
   /* derived */
-  const milestones = fixMilestones(state.milestones, state.eventDate).map((m) => ({ ...m, status: extras.done[m.id] ? "complete" as const : m.status }));
+  const milestones: Milestone[] = scheduleMilestones<Milestone>(state.milestones, state.eventDate).map((m: Milestone): Milestone => ({ ...m, status: extras.done[m.id] ? "complete" : m.status }));
   const vendors: Vendor[] = [...state.vendors, ...extras.customVendors];
   const confirmed = extras.guests.filter((g) => g.rsvp === "confirmed");
   const headcount = confirmed.reduce((s, g) => s + 1 + g.plusOnes, 0);
@@ -264,9 +284,25 @@ export default function Dashboard() {
     if (!state.planValidated) a.push({ id: "validate", tone: "gold", title: "Plan not validated", body: "Validate your plan to confirm numbers and start the countdown." });
     if (spent > 0 && spent > state.budget) a.push({ id: "spent", tone: "rose", title: "Logged spend passes your budget", body: `${formatCurrency(spent, state.currency)} logged against ${formatCurrency(state.budget, state.currency)}.` });
     if (pendingCount) a.push({ id: "rsvp", tone: "gold", title: `${pendingCount} RSVP${pendingCount > 1 ? "s" : ""} pending`, body: "Send a reminder from the Guests section." });
-    if (nextMilestone) a.push({ id: "next", tone: "teal", title: "Next milestone", body: `${nextMilestone.title} · ${nextMilestone.date}` });
+    if (nextMilestone) a.push({ id: "next", tone: "teal", title: "Next milestone", body: `${nextMilestone.title} · ${fmtShort(nextMilestone.date)}` });
     return a;
   }, [analytics.status, analytics.remaining, state.currency, state.planValidated, state.budget, spent, pendingCount, nextMilestone]);
+
+  const readiness: Readiness = (() => {
+    const booked = vendors.filter((v) => extras.vstatus[v.id] === "booked").length;
+    const msDone = milestones.filter((m) => m.status === "complete").length;
+    const parts = [
+      { label: "Plan validated", pct: state.planValidated && !isDirty ? 100 : 0, weight: 15, view: "Budget" as View, tip: "Validate your plan so the numbers are confirmed.", cta: "Open budget" },
+      { label: "Within budget", pct: analytics.status === "over" || analytics.status === "invalid" ? 0 : 100, weight: 20, view: "Budget" as View, tip: "Your allocations exceed the budget. Trim a category to get back on track.", cta: "Fix budget" },
+      { label: "RSVPs", pct: state.guests ? Math.min(100, (headcount / state.guests) * 100) : 0, weight: 20, view: "Guests" as View, tip: "Add your guests and collect RSVPs to confirm the headcount.", cta: "Open guests" },
+      { label: "Vendors booked", pct: Math.min(100, (booked / 2) * 100), weight: 15, view: "Vendors" as View, tip: "Book your top vendors to lock in prices.", cta: "Open vendors" },
+      { label: "Checklist", pct: extras.tasks.length ? (tasksDone / extras.tasks.length) * 100 : 0, weight: 15, view: "Checklist" as View, tip: "Work through your checklist, starting with the oldest tasks.", cta: "Open checklist" },
+      { label: "Milestones", pct: milestones.length ? (msDone / milestones.length) * 100 : 0, weight: 15, view: "Timeline" as View, tip: "Tick off finished milestones to keep the timeline honest.", cta: "Open timeline" }
+    ];
+    const score = Math.round(parts.reduce((sum, p) => sum + (p.pct * p.weight) / 100, 0));
+    const gap = [...parts].sort((a, b) => (100 - b.pct) * b.weight - (100 - a.pct) * a.weight)[0];
+    return { score, parts: parts.map((p) => ({ label: p.label, pct: p.pct })), tip: { text: gap.tip, view: gap.view, cta: gap.cta } };
+  })();
 
   /* exports */
   const briefText = () => [
@@ -274,11 +310,15 @@ export default function Dashboard() {
     `Budget: ${formatCurrency(state.budget, state.currency)} | Allocated: ${formatCurrency(analytics.allocated, state.currency)} | Remaining: ${formatCurrency(analytics.remaining, state.currency)}`,
     `Guests planned: ${state.guests} | Confirmed headcount: ${headcount}`, "", "Allocation",
     ...analytics.categoryBreakdown.map((c) => `- ${c.label}: ${formatCurrency(c.amount, state.currency)} (${Math.round(c.percentage)}%)`), "", "Timeline",
-    ...milestones.map((m) => `- [${m.status === "complete" ? "x" : " "}] ${m.date} ${m.title}`), "", "Checklist",
+    ...milestones.map((m) => `- [${m.status === "complete" ? "x" : " "}] ${fmtShort(m.date)} ${m.title}`), "", "Checklist",
     ...extras.tasks.map((t) => `- [${t.done ? "x" : " "}] ${t.title}`)
   ].join("\n");
   const exportPlan = () => { download(`${state.eventName.replace(/\W+/g, "-").toLowerCase() || "plan"}.json`, JSON.stringify({ plan: state, ...extras }, null, 2), "application/json"); notify("Plan downloaded as JSON."); };
   const exportBrief = () => { download("event-brief.txt", briefText(), "text/plain"); notify("Event brief downloaded."); };
+  const aiContext = briefText().slice(0, 2500);
+  const calItems = [{ title: state.eventName, date: state.eventDate, description: `${state.eventType} at ${state.location}`, location: state.location }, ...milestones.map((m) => ({ title: `${m.title} - ${state.eventName}`, date: m.date, description: m.description }))];
+  const exportIcs = () => { download("planodyssey-calendar.ics", buildIcs(state.eventName, calItems), "text/calendar"); notify("Calendar file downloaded. Open it to add every milestone to Google Calendar."); };
+  const gcalUrl = googleCalendarUrl({ title: state.eventName, date: state.eventDate, location: state.location, description: `${state.eventType} planned with PlanOdyssey` });
 
   const go = (v: View) => { setView(v); setMobileNav(false); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const toggleTheme = () => patch({ theme: extras.theme === "light" ? "dark" : "light" });
@@ -353,20 +393,23 @@ export default function Dashboard() {
               <button className="icon-btn" onClick={() => { setAlertsOpen(true); patch({ alertsRead: true }); }} aria-label="View plan alerts"><Bell size={17} />{!extras.alertsRead && alerts.length > 0 && <span className="absolute right-2 top-2 h-2 w-2 rounded-full" style={{ background: "var(--rose)" }} />}</button>
               <button className="btn btn-sm hidden sm:inline-flex" onClick={() => setModal("share")}><Share2 size={15} />Share</button>
               {signedIn
-                ? <button onClick={() => setModal("profile")} className="btn btn-sm"><span className="grid h-6 w-6 place-items-center rounded-full text-[10px] text-[#2a1b04]" style={{ background: "#f3b44f" }}>{initials(profile.name)}</span><span className="hidden sm:inline">{profile.name.split(" ")[0]}</span></button>
+                ? <button onClick={logout} className="btn btn-sm"><LogOut size={15} />Log out</button>
                 : <button onClick={() => setModal("auth")} className="btn btn-sm"><UserRound size={15} />Sign in</button>}
               <button onClick={() => setModal("chat")} className="btn btn-primary btn-sm"><Sparkles size={15} />Ask Odyssey</button>
             </div>
           </header>
 
           <div key={view} className="view">
-            {view === "Overview" && <Overview state={state} analytics={analytics} isDirty={isDirty} extras={extras} headcount={headcount} milestones={milestones} vendors={vendors} spent={spent} tasksDone={tasksDone} nextMilestone={nextMilestone} onValidate={() => validatePlan()} onRestore={restorePlan} go={go} setModal={setModal} toggleMilestone={(id) => patch({ done: { ...extras.done, [id]: !extras.done[id] } })} setLightbox={setLightbox} onExport={exportBrief} />}
+            {view === "Overview" && <Overview readiness={readiness} state={state} analytics={analytics} isDirty={isDirty} extras={extras} headcount={headcount} milestones={milestones} vendors={vendors} spent={spent} tasksDone={tasksDone} nextMilestone={nextMilestone} onValidate={() => validatePlan()} onRestore={restorePlan} go={go} setModal={setModal} toggleMilestone={(id) => patch({ done: { ...extras.done, [id]: !extras.done[id] } })} setLightbox={setLightbox} onExport={exportBrief} />}
             {view === "Budget" && <BudgetView state={state} analytics={analytics} health={health} isDirty={isDirty} extras={extras} patch={patch} onValidate={() => validatePlan()} onRestore={restorePlan} onSave={saveDraft} updateNumber={updateNumber} updateCategory={updateCategory} updateCurrency={updateCurrency} notify={notify} />}
             {view === "Guests" && <GuestsView state={state} extras={extras} patch={patch} headcount={headcount} notify={notify} />}
             {view === "Vendors" && <VendorsView state={state} vendors={vendors} extras={extras} patch={patch} notify={notify} />}
             {view === "Timeline" && <TimelineView state={state} milestones={milestones} toggle={(id) => patch({ done: { ...extras.done, [id]: !extras.done[id] } })} setModal={setModal} />}
             {view === "Checklist" && <ChecklistView extras={extras} patch={patch} notify={notify} />}
             {view === "Documents" && <DocumentsView extras={extras} patch={patch} notify={notify} onBrief={exportBrief} />}
+            {view === "Seating" && <SeatingView extras={extras} patch={patch} notify={notify} />}
+            {view === "Day plan" && <DayPlanView state={state} extras={extras} patch={patch} notify={notify} context={aiContext} />}
+            {view === "Invitations" && <InvitationsView state={state} extras={extras} patch={patch} notify={notify} context={aiContext} />}
             {view === "Inspiration" && <InspirationView extras={extras} patch={patch} setLightbox={setLightbox} notify={notify} />}
           </div>
         </section>
@@ -395,15 +438,15 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-      {modal === "auth" && <AuthModal onClose={() => setModal(null)} onSignedIn={(p) => { setProfile(p); setSignedIn(true); setModal(null); notify("Your verified profile is ready."); }} />}
+      {modal === "auth" && <AuthModal onClose={() => { pendingCreate.current = false; setModalState(null); }} onSignedIn={(p) => { setProfile(p); setSignedIn(true); setModalState(pendingCreate.current ? "create-plan" : null); pendingCreate.current = false; notify("You are signed in."); }} />}
       {modal === "subscription" && <SubscriptionModal onClose={() => setModal(null)} onPaid={() => { setModal("chat"); notify("Demo Pro access unlocked for 180 seconds."); }} />}
-      {modal === "chat" && <ChatModal onClose={() => setModal(null)} onPaywall={() => setModal("subscription")} />}
-      {modal === "create-plan" && <CreatePlanModal onClose={() => setModal(null)} onCreated={(p) => { applyGeneratedPlan(p); setModal(null); }} />}
-      {modal === "settings" && <SettingsModal theme={extras.theme} setTheme={(t) => patch({ theme: t })} onClose={() => setModal(null)} onLogout={() => { setSignedIn(false); setModal(null); notify("You have been signed out."); }} onReset={() => { patch({ ...DEFAULT_EXTRAS, theme: extras.theme }); setModal(null); notify("Guests, tasks, expenses and documents were reset."); }} />}
-      {modal === "profile" && <ProfileModal profile={profile} signedIn={signedIn} onClose={() => setModal(null)} onSignIn={() => setModal("auth")} />}
+      {modal === "chat" && <ChatModal onClose={() => setModal(null)} onPaywall={() => setModal("subscription")} context={aiContext} />}
+      {modal === "create-plan" && <CreatePlanModal onClose={() => setModal(null)} onCreated={(p, ros, tasks) => { applyGeneratedPlan(p, ros, tasks); setModal(null); }} />}
+      {modal === "settings" && <SettingsModal theme={extras.theme} setTheme={(t) => patch({ theme: t })} onClose={() => setModal(null)} signedIn={signedIn} onLogout={logout} onReset={() => { patch({ ...DEFAULT_EXTRAS, theme: extras.theme }); setModal(null); notify("Guests, tasks, expenses and documents were reset."); }} />}
+      {modal === "profile" && <ProfileModal profile={profile} signedIn={signedIn} onClose={() => setModal(null)} onSignIn={() => setModal("auth")} onLogout={logout} />}
       {modal === "feedback" && <FeedbackModal onClose={() => setModal(null)} onDone={() => { setModal(null); notify("Thanks — your idea was added to the improvement queue."); }} />}
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
-      {modal === "share" && <ShareModal onClose={() => setModal(null)} onJson={exportPlan} onBrief={exportBrief} notify={notify} />}
+      {modal === "share" && <ShareModal onClose={() => setModal(null)} onJson={exportPlan} onBrief={exportBrief} notify={notify} onIcs={exportIcs} gcalUrl={gcalUrl} />}
     </main>
   );
 }
@@ -432,8 +475,8 @@ function Palette({ commands, onClose }: { commands: { label: string; hint: strin
 }
 
 /* ───────────────────────────── Overview ───────────────────────────── */
-function Overview({ state, analytics, isDirty, extras, headcount, milestones, vendors, spent, tasksDone, nextMilestone, onValidate, onRestore, go, setModal, toggleMilestone, setLightbox, onExport }: {
-  state: PlannerState; analytics: Analytics; isDirty: boolean; extras: Extras; headcount: number; milestones: Milestone[]; vendors: Vendor[]; spent: number; tasksDone: number;
+function Overview({ state, analytics, isDirty, extras, headcount, milestones, vendors, spent, tasksDone, nextMilestone, onValidate, onRestore, go, setModal, toggleMilestone, setLightbox, onExport, readiness }: {
+  readiness: Readiness; state: PlannerState; analytics: Analytics; isDirty: boolean; extras: Extras; headcount: number; milestones: Milestone[]; vendors: Vendor[]; spent: number; tasksDone: number;
   nextMilestone?: Milestone; onValidate: () => void; onRestore: () => void; go: (v: View) => void; setModal: (m: Modal) => void; toggleMilestone: (id: string) => void; setLightbox: (p: Photo) => void; onExport: () => void;
 }) {
   const heroId = HERO_BY_TYPE[state.eventType] ?? HERO_BY_TYPE.Other;
@@ -480,6 +523,8 @@ function Overview({ state, analytics, isDirty, extras, headcount, milestones, ve
         ))}
       </div>
 
+      <div className="mt-5 grid gap-5 xl:grid-cols-2"><ReadinessCard r={readiness} go={go} /><WeatherCard city={state.location} date={state.eventDate} /></div>
+
       <div className="mt-5 grid gap-5 xl:grid-cols-[1.25fr_.75fr]">
         <AnalyticsCard state={state} analytics={analytics} isDirty={isDirty} onValidate={onValidate} onRestore={onRestore} />
         <div className="space-y-5">
@@ -489,11 +534,11 @@ function Overview({ state, analytics, isDirty, extras, headcount, milestones, ve
             <button onClick={() => setModal("chat")} className="linkish mt-5 inline-flex items-center gap-1">Ask about this allocation <ArrowUpRight size={14} /></button>
           </section>
           <section className="card card-pad">
-            <div className="mb-4 flex items-center justify-between"><div><h2 className="display text-2xl">Next up</h2><p className="muted mt-1 text-xs">{nextMilestone ? nextMilestone.date : "Everything is complete"}</p></div><button className="linkish" onClick={() => go("Timeline")}>View all</button></div>
+            <div className="mb-4 flex items-center justify-between"><div><h2 className="display text-2xl">Next up</h2><p className="muted mt-1 text-xs">{nextMilestone ? fmtShort(nextMilestone.date) : "Everything is complete"}</p></div><button className="linkish" onClick={() => go("Timeline")}>View all</button></div>
             {milestones.length ? milestones.slice(0, 4).map((m) => (
               <div className="row" key={m.id}>
                 <button className={`tl-node ${m.status === "complete" ? "done" : m.status === "active" ? "active" : ""}`} onClick={() => toggleMilestone(m.id)} aria-label={`Mark ${m.title} ${m.status === "complete" ? "incomplete" : "complete"}`}><Check size={14} /></button>
-                <div className="min-w-0"><p className={`text-sm font-bold ${m.status === "complete" ? "done-text" : ""}`}>{m.title}</p><p className="muted text-xs">{m.date}</p></div>
+                <div className="min-w-0"><p className={`text-sm font-bold ${m.status === "complete" ? "done-text" : ""}`}>{m.title}</p><p className="muted text-xs">{fmtShort(m.date)}</p></div>
               </div>
             )) : <Empty title="No timeline yet" message="Generate a plan to create milestones." />}
           </section>
@@ -609,6 +654,7 @@ function BudgetView({ state, analytics, health, isDirty, extras, patch, onValida
               {extras.expenses.length ? extras.expenses.slice(0, 6).map((e) => <div className="row" key={e.id}><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold">{e.label}</p><p className="muted text-xs">{state.categories.find((c) => c.id === e.categoryId)?.label ?? "Uncategorised"} · {e.date}</p></div><p className="tnum text-sm font-bold">{formatCurrency(e.amount, cur)}</p><button className="icon-btn icon-btn-sm" aria-label={`Delete ${e.label}`} onClick={() => patch({ expenses: extras.expenses.filter((x) => x.id !== e.id) })}><Trash2 size={14} /></button></div>) : <Empty title="No expenses yet" message="Your first logged payment will appear here." />}
             </div>
           </section>
+          <OptimizerCard state={state} analytics={analytics} />
           <section className="card card-pad">
             <h2 className="display text-2xl">What if guests change?</h2>
             <p className="muted mt-1 text-sm">Assumes every cost scales per guest, so treat it as an upper bound.</p>
@@ -686,7 +732,7 @@ function VendorsView({ state, vendors, extras, patch, notify }: { state: Planner
   const add = () => {
     const quote = Number(form.quote);
     if (!form.vendor.trim() || !Number.isFinite(quote) || quote <= 0) return notify("Add a vendor name and a quote above zero.");
-    patch({ customVendors: [...extras.customVendors, { id: `c-${uid()}`, vendor: form.vendor.trim(), fit: form.fit.trim() || "Custom vendor", quote, rating: Number(form.rating) || 4 } as unknown as Vendor] });
+    patch({ customVendors: [...extras.customVendors, { id: `c-${uid()}`, vendor: form.vendor.trim(), fit: form.fit.trim() || "Custom vendor", quote, rating: Number(form.rating) || 4, category: "Custom", recommended: false } as unknown as Vendor] });
     setForm({ vendor: "", fit: "", quote: "", rating: "4.5" }); setOpen(false); notify("Vendor added to your shortlist.");
   };
   const booked = vendors.filter((v) => extras.vstatus[v.id] === "booked").reduce((s, v) => s + v.quote, 0);
@@ -715,8 +761,8 @@ function VendorsView({ state, vendors, extras, patch, notify }: { state: Planner
               <article key={v.id} className="card overflow-hidden">
                 <Photo src={u(["1555244162-803834f70033", "1511795409834-ef04bbd61622", "1505236858219-8359eb29e329", "1469371670807-013ccf25f16a"][i % 4], 800)} alt="" className="h-40 w-full rounded-none" />
                 <div className="p-5">
-                  <div className="flex items-start justify-between gap-3"><h3 className="display text-xl leading-tight">{v.vendor}</h3>{status && <span className={`chip ${status === "booked" ? "chip-teal" : "chip-gold"}`}>{status}</span>}</div>
-                  <p className="muted mt-1 flex items-center gap-1 text-xs"><Star size={12} fill="#e9a23b" stroke="#e9a23b" />{v.rating} · {v.fit}</p>
+                  <div className="flex items-start justify-between gap-3"><h3 className="display text-xl leading-tight">{v.vendor}</h3>{status ? <span className={`chip ${status === "booked" ? "chip-teal" : "chip-gold"}`}>{status}</span> : v.recommended ? <span className="chip chip-gold">Recommended</span> : null}</div>
+                  <p className="muted mt-1 flex items-center gap-1 text-xs"><Star size={12} fill="#e9a23b" stroke="#e9a23b" />{v.rating} · {v.fit}{v.category ? ` · ${v.category}` : ""}</p>
                   <p className="display tnum mt-4 text-3xl">{formatCurrency(v.quote)}</p>
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button className="btn btn-sm" onClick={() => status === "shortlisted" ? set(v.id, null, "Removed from shortlist.") : set(v.id, "shortlisted", `${v.vendor} shortlisted.`)}><Heart size={14} fill={status ? "currentColor" : "none"} />{status ? "Saved" : "Save"}</button>
@@ -746,7 +792,7 @@ function TimelineView({ state, milestones, toggle, setModal }: { state: PlannerS
         {milestones.length ? milestones.map((m, i) => (
           <div className="flex gap-4" key={m.id}>
             <div className="flex flex-col items-center"><button className={`tl-node ${m.status === "complete" ? "done" : m.status === "active" ? "active" : ""}`} onClick={() => toggle(m.id)} aria-label={`Mark ${m.title} ${m.status === "complete" ? "incomplete" : "complete"}`}><Check size={14} /></button>{i < milestones.length - 1 && <div className="my-1 w-px flex-1" style={{ background: "var(--line-2)" }} />}</div>
-            <div className="pb-8"><p className={`text-[15px] font-bold ${m.status === "complete" ? "done-text" : ""}`}>{m.title}</p><p className="muted mt-1 max-w-xl text-sm leading-6">{m.description}</p><p className="muted mt-2 inline-flex items-center gap-1 text-xs font-bold"><Clock3 size={12} />{m.date}</p></div>
+            <div className="pb-8"><p className={`text-[15px] font-bold ${m.status === "complete" ? "done-text" : ""}`}>{m.title}</p><p className="muted mt-1 max-w-xl text-sm leading-6">{m.description}</p><p className="muted mt-2 inline-flex items-center gap-1 text-xs font-bold"><Clock3 size={12} />{fmtShort(m.date)}</p></div>
           </div>
         )) : <Empty title="No timeline returned" message="Generate or edit a plan to create event-specific milestones." />}
       </section>
@@ -844,9 +890,9 @@ function InspirationView({ extras, patch, setLightbox, notify }: { extras: Extra
 }
 
 /* ───────────────────────────── Modals ───────────────────────────── */
-function ShareModal({ onClose, onJson, onBrief, notify }: { onClose: () => void; onJson: () => void; onBrief: () => void; notify: (m: string) => void }) {
+function ShareModal({ onClose, onJson, onBrief, notify, onIcs, gcalUrl }: { onClose: () => void; onJson: () => void; onBrief: () => void; notify: (m: string) => void; onIcs: () => void; gcalUrl: string }) {
   const copy = async () => { try { await navigator.clipboard.writeText(window.location.href); notify("Link copied to clipboard."); } catch { notify("Copy failed. Select the address bar link instead."); } };
-  const items = [{ icon: Copy, label: "Copy page link", run: copy }, { icon: FileText, label: "Download event brief (.txt)", run: onBrief }, { icon: Download, label: "Download full plan (.json)", run: onJson }, { icon: Printer, label: "Print this view", run: () => { onClose(); window.setTimeout(() => window.print(), 250); } }];
+  const items = [{ icon: CalendarDays, label: "Add event to Google Calendar", run: () => { window.open(gcalUrl, "_blank", "noopener"); } }, { icon: CalendarDays, label: "Download all milestones (.ics)", run: onIcs }, { icon: Copy, label: "Copy page link", run: copy }, { icon: FileText, label: "Download event brief (.txt)", run: onBrief }, { icon: Download, label: "Download full plan (.json)", run: onJson }, { icon: Printer, label: "Print this view", run: () => { onClose(); window.setTimeout(() => window.print(), 250); } }];
   return <ModalShell title="Share & export" sub="Send your plan to family and vendors, or keep a copy." onClose={onClose}><div className="mt-6 space-y-3">{items.map(({ icon: Icon, label, run }) => <button key={label} onClick={() => void run()} className="btn btn-block justify-start"><Icon size={17} style={{ color: "var(--gold-deep)" }} />{label}</button>)}</div></ModalShell>;
 }
 
@@ -922,11 +968,11 @@ function SubscriptionModal({ onClose, onPaid }: { onClose: () => void; onPaid: (
   );
 }
 
-function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreated: (plan: Partial<PlannerState>) => void }) {
+function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreated: (plan: Partial<PlannerState>, ros?: { time: string; title: string; detail: string }[], tasks?: string[]) => void }) {
   const [form, setForm] = useState({ eventName: "", eventType: "Wedding", eventDate: "", budget: "16000", confirmedGuests: "80", unsureGuests: "20", location: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<{ summary: string; budgetAdvice: string; recommendations: string[]; risks: string[]; categories: { label: string; amount: number }[]; milestones: { title: string; date: string; description: string }[]; completionWish: string } | null>(null);
+  const [result, setResult] = useState<{ summary: string; budgetAdvice: string; recommendations: string[]; risks: string[]; categories: { label: string; amount: number }[]; milestones: { title: string; date: string; description: string }[]; runOfShow?: { time: string; title: string; detail: string }[]; tasks?: string[]; completionWish: string } | null>(null);
   const update = (key: keyof typeof form, value: string) => setForm((c) => ({ ...c, [key]: value }));
   const submit = async () => {
     if (loading) return;
@@ -940,12 +986,12 @@ function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreate
     } catch (e) { setError(e instanceof Error ? e.message : "Could not create the plan."); } finally { setLoading(false); }
   };
   if (result) {
-    const apply = () => onCreated({
+    const apply = () => onCreated(({
       eventName: form.eventName, eventType: form.eventType, eventDate: form.eventDate, location: form.location, budget: Number(form.budget), guests: Number(form.confirmedGuests) + Number(form.unsureGuests),
       planValidated: true, planRisks: result.risks, completionWish: result.completionWish,
       milestones: result.milestones.length ? result.milestones.map((m, i): Milestone => ({ id: `ai-milestone-${i}`, title: m.title, date: m.date, description: m.description, status: i === 0 ? "active" : "upcoming" })) : undefined,
       categories: result.categories.map((c, i): BudgetCategory => ({ id: `ai-${i}`, label: c.label, amount: Math.round(c.amount), color: ["#5b3a8c", "#1d8a84", "#e9a23b", "#c4476a", "#4f7cc4"][i % 5], icon: ["building", "utensils", "sparkles", "camera", "music"][i % 5] }))
-    });
+    }), result.runOfShow, result.tasks);
     return (
       <ModalShell title="Your plan is ready" onClose={onClose} wide>
         <div className="mt-5 rounded-2xl p-4 text-sm leading-6" style={{ background: "var(--plum-soft)" }}><Sparkles size={17} className="mb-2" style={{ color: "var(--plum)" }} />{result.summary}</div>
@@ -953,7 +999,7 @@ function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreate
         <h3 className="mt-5 text-sm font-bold">Suggested allocation</h3>
         <ul className="mt-2 space-y-2 text-sm">{result.categories.map((c) => <li key={c.label} className="flex justify-between gap-4"><span className="muted">{c.label}</span><strong className="tnum">{formatCurrency(c.amount)}</strong></li>)}</ul>
         <h3 className="mt-5 text-sm font-bold">Timeline</h3>
-        {result.milestones.length ? <ul className="mt-2 space-y-2 text-sm leading-6">{result.milestones.map((m) => <li key={`${m.title}-${m.date}`}><CalendarDays size={14} className="mr-2 inline" style={{ color: "var(--gold-deep)" }} /><strong>{m.date}:</strong> <span className="muted">{m.title}</span></li>)}</ul> : <p className="muted mt-2 text-sm">No milestones returned; a standard date-based timeline will be generated.</p>}
+        {result.milestones.length ? <ul className="mt-2 space-y-2 text-sm leading-6">{result.milestones.map((m) => <li key={`${m.title}-${m.date}`}><CalendarDays size={14} className="mr-2 inline" style={{ color: "var(--gold-deep)" }} /><strong>{fmtShort(m.date)}:</strong> <span className="muted">{m.title}</span></li>)}</ul> : <p className="muted mt-2 text-sm">No milestones returned; a standard date-based timeline will be generated.</p>}
         <h3 className="mt-5 text-sm font-bold">Location recommendations</h3>
         {result.recommendations.length ? <ul className="mt-2 space-y-2 text-sm leading-6">{result.recommendations.map((r) => <li key={r}><Check size={14} className="mr-2 inline" style={{ color: "var(--teal)" }} /><span className="muted">{r}</span></li>)}</ul> : <p className="muted mt-2 text-sm">No location recommendations were returned.</p>}
         {result.risks?.length > 0 && <><h3 className="mt-5 text-sm font-bold" style={{ color: "var(--rose)" }}>Risks to verify</h3><ul className="mt-2 space-y-2 text-sm leading-6" style={{ color: "var(--rose)" }}>{result.risks.map((r) => <li key={r}>• {r}</li>)}</ul></>}
@@ -978,7 +1024,7 @@ function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreate
   );
 }
 
-function ChatModal({ onClose, onPaywall }: { onClose: () => void; onPaywall: () => void }) {
+function ChatModal({ onClose, onPaywall, context }: { onClose: () => void; onPaywall: () => void; context: string }) {
   const [message, setMessage] = useState("");
   const [history, setHistory] = useState<Array<{ role: "user" | "model"; parts: Array<{ text: string }> }>>([]);
   const [messages, setMessages] = useState<Array<{ text: string; type: "user" | "bot" | "error" }>>([{ text: "Hi, I'm Odyssey. Ask me about budgets, vendors, guest-driven costs or date risks.", type: "bot" }]);
@@ -993,7 +1039,7 @@ function ChatModal({ onClose, onPaywall }: { onClose: () => void; onPaywall: () 
     setMessages((c) => [...c, { text: prompt, type: "user" }, { text: "Odyssey is thinking…", type: "bot" }]);
     setMessage(""); setBusy(true);
     try {
-      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: prompt, history }) });
+      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: prompt, history, context }) });
       const data = await response.json() as { error?: string; answer?: string };
       if (!response.ok) throw new Error(data.error || `API request failed (${response.status})`);
       const answer = data.answer?.trim();
@@ -1024,7 +1070,7 @@ function ChatModal({ onClose, onPaywall }: { onClose: () => void; onPaywall: () 
   );
 }
 
-function SettingsModal({ theme, setTheme, onClose, onLogout, onReset }: { theme: "light" | "dark"; setTheme: (t: "light" | "dark") => void; onClose: () => void; onLogout: () => void; onReset: () => void }) {
+function SettingsModal({ theme, setTheme, onClose, onLogout, onReset, signedIn }: { signedIn: boolean; theme: "light" | "dark"; setTheme: (t: "light" | "dark") => void; onClose: () => void; onLogout: () => void; onReset: () => void }) {
   const [reminders, setReminders] = useState(true);
   return (
     <ModalShell title="Settings" onClose={onClose}>
@@ -1032,17 +1078,17 @@ function SettingsModal({ theme, setTheme, onClose, onLogout, onReset }: { theme:
         <div className="inset flex items-center justify-between gap-3 p-4"><div className="flex items-center gap-3"><Sun size={18} style={{ color: "var(--gold-deep)" }} /><div><p className="text-sm font-bold">Appearance</p><p className="muted text-xs">Light or dark workspace</p></div></div><div className="tabs"><button className="tab" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>Light</button><button className="tab" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>Dark</button></div></div>
         <label className="inset flex cursor-pointer items-center justify-between gap-3 p-4"><div className="flex items-center gap-3"><Bell size={18} style={{ color: "var(--gold-deep)" }} /><div><p className="text-sm font-bold">Planning reminders</p><p className="muted text-xs">Weekly runway nudges</p></div></div><input type="checkbox" className="tick" checked={reminders} onChange={(e) => setReminders(e.target.checked)} /></label>
         <button onClick={onReset} className="btn btn-block justify-start"><RotateCcw size={17} />Reset guests, tasks, expenses and documents</button>
-        <button onClick={onLogout} className="btn btn-danger btn-block justify-start"><LogOut size={17} />Sign out of this workspace</button>
+        {signedIn && <button onClick={onLogout} className="btn btn-danger btn-block justify-start"><LogOut size={17} />Log out</button>}
       </div>
     </ModalShell>
   );
 }
 
-function ProfileModal({ profile, signedIn, onClose, onSignIn }: { profile: { name: string; email: string }; signedIn: boolean; onClose: () => void; onSignIn: () => void }) {
+function ProfileModal({ profile, signedIn, onClose, onSignIn, onLogout }: { profile: { name: string; email: string }; signedIn: boolean; onClose: () => void; onSignIn: () => void; onLogout: () => void }) {
   return (
     <ModalShell title="Your profile" onClose={onClose}>
-      <div className="inset mt-6 flex items-center gap-4 p-4"><div className="grid h-14 w-14 place-items-center rounded-full text-lg font-bold text-[#2a1b04]" style={{ background: "#f3b44f" }}>{initials(profile.name)}</div><div><p className="font-bold">{profile.name}</p><p className="muted mt-1 flex items-center gap-1 text-xs"><Mail size={12} />{profile.email}</p></div></div>
-      {signedIn ? <div className="chip chip-teal mt-5 w-full justify-center py-3"><Check size={14} />Your profile is synced</div> : <button onClick={onSignIn} className="btn btn-primary btn-block mt-5">Sign in or register</button>}
+      <div className="inset mt-6 flex items-center gap-4 p-4"><div className="grid h-14 w-14 place-items-center rounded-full text-lg font-bold text-[#2a1b04]" style={{ background: "#f3b44f" }}>{signedIn ? initials(profile.name) : <UserRound size={22} />}</div><div><p className="font-bold">{signedIn ? profile.name : "Guest"}</p><p className="muted mt-1 flex items-center gap-1 text-xs">{signedIn ? <><Mail size={12} />{profile.email}</> : "You are browsing as a guest"}</p></div></div>
+      {signedIn ? <button onClick={onLogout} className="btn btn-danger btn-block mt-5"><LogOut size={16} />Log out</button> : <><p className="muted mt-5 text-sm leading-6">Sign in to create AI event plans and keep your profile.</p><button onClick={onSignIn} className="btn btn-primary btn-block mt-4">Sign in or register</button></>}
     </ModalShell>
   );
 }
@@ -1067,5 +1113,235 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         <div className="btn btn-block justify-start" style={{ cursor: "default" }}><CircleHelp size={18} style={{ color: "var(--gold-deep)" }} />Press Ctrl K anywhere to search</div>
       </div>
     </ModalShell>
+  );
+}
+
+
+/* ───────────────────────────── Readiness & weather ───────────────────────────── */
+function ReadinessCard({ r, go }: { r: Readiness; go: (v: View) => void }) {
+  return (
+    <section className="card card-pad">
+      <div className="flex flex-wrap items-center gap-6">
+        <div className="donut" style={{ width: 124, height: 124, background: `conic-gradient(var(--gold) ${r.score}%, var(--line-2) 0)` }} role="img" aria-label={`Readiness ${r.score} out of 100`}><div><p className="display tnum text-3xl">{r.score}</p><p className="muted text-[11px]">of 100</p></div></div>
+        <div className="min-w-0 flex-1"><h2 className="display text-2xl">Event readiness</h2><p className="muted mt-1 text-sm leading-6">{r.tip.text}</p><button className="btn btn-primary btn-sm mt-3" onClick={() => go(r.tip.view)}>{r.tip.cta}<ChevronRight size={14} /></button></div>
+      </div>
+      <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">{r.parts.map((p) => <div key={p.label}><div className="flex justify-between text-xs"><span className="muted">{p.label}</span><b className="tnum">{Math.round(p.pct)}%</b></div><div className="track mt-1.5"><i style={{ width: `${p.pct}%` }} /></div></div>)}</div>
+    </section>
+  );
+}
+
+type Weather = { available: boolean; mode?: "forecast" | "historical"; place?: string; tempMax?: number; tempMin?: number; rainChance?: number; wind?: number; code?: number; error?: string; daysAway?: number };
+function weatherLabel(code?: number) {
+  if (code === undefined) return "";
+  if (code === 0) return "Clear skies";
+  if (code <= 3) return "Partly cloudy";
+  if (code === 45 || code === 48) return "Foggy";
+  if (code >= 51 && code <= 67) return "Rain likely";
+  if (code >= 71 && code <= 77) return "Snow";
+  if (code >= 80 && code <= 82) return "Showers";
+  if (code >= 95) return "Thunderstorms";
+  return "Mixed conditions";
+}
+function WeatherCard({ city, date }: { city: string; date: string }) {
+  const [w, setW] = useState<Weather | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let off = false;
+    setLoading(true);
+    fetch(`/api/weather?city=${encodeURIComponent(city)}&date=${encodeURIComponent(date)}`).then((r) => r.json()).then((d: Weather) => { if (!off) setW(d); })
+      .catch(() => { if (!off) setW({ available: false, error: "Weather is temporarily unavailable." }); }).finally(() => { if (!off) setLoading(false); });
+    return () => { off = true; };
+  }, [city, date]);
+  const hist = w?.mode === "historical";
+  return (
+    <section className="card card-pad">
+      <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-xl" style={{ background: "var(--gold-soft)", color: "var(--gold-deep)" }}><CloudSun size={22} /></div><div><h2 className="display text-2xl">Weather outlook</h2><p className="muted text-xs">{w?.place ?? city}</p></div></div>{w?.available && <span className={`chip ${hist ? "chip-gold" : "chip-teal"}`}>{hist ? "Typical for this date" : "Live forecast"}</span>}</div>
+      {loading ? <p className="muted mt-6 text-sm">Checking conditions…</p> : w?.available ? (
+        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="inset p-4"><p className="muted text-xs">High</p><p className="display tnum mt-1 text-2xl">{w.tempMax !== undefined ? `${Math.round(w.tempMax)}°C` : "–"}</p></div>
+          <div className="inset p-4"><p className="muted text-xs">Low</p><p className="display tnum mt-1 text-2xl">{w.tempMin !== undefined ? `${Math.round(w.tempMin)}°C` : "–"}</p></div>
+          <div className="inset p-4"><p className="muted text-xs">{hist ? "Rain in past years" : "Rain chance"}</p><p className="display tnum mt-1 text-2xl">{w.rainChance !== undefined ? `${Math.round(w.rainChance)}%` : "–"}</p></div>
+          <div className="inset p-4"><p className="muted text-xs">Wind</p><p className="display tnum mt-1 text-2xl">{w.wind !== undefined ? `${Math.round(w.wind)} km/h` : "–"}</p></div>
+          <p className="muted col-span-full text-xs leading-5">{hist ? "A live forecast opens 15 days before the event. This is the average of the same date over the last 3 years." : weatherLabel(w.code)}{(w.rainChance ?? 0) >= 40 && " Plan a covered backup for outdoor moments."}</p>
+        </div>
+      ) : <p className="muted mt-6 text-sm leading-6">{w?.error ?? "No weather data is available for this date yet."}</p>}
+    </section>
+  );
+}
+
+/* ───────────────────────────── AI budget optimizer ───────────────────────────── */
+function OptimizerCard({ state, analytics }: { state: PlannerState; analytics: Analytics }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const run = async () => {
+    setBusy(true); setErr("");
+    try {
+      const lines = analytics.categoryBreakdown.map((c) => `${c.label}: ${Math.round(c.amount)}`).join("; ");
+      setText(await askAI(`Act as a budget optimizer for a ${state.eventType.toLowerCase()} in ${state.location} with ${state.guests} guests and a total budget of ${state.budget} ${state.currency ?? "INR"}. Current allocation: ${lines}. Allocated total: ${Math.round(analytics.allocated)}. Give exactly 4 specific numbered recommendations to save money or rebalance, each with an estimated saving and the trade-off. Be concise.`));
+    } catch (e) { setErr(e instanceof Error ? e.message : "Could not optimise right now."); } finally { setBusy(false); }
+  };
+  return (
+    <section className="card card-pad">
+      <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="display text-2xl">AI budget optimizer</h2><p className="muted mt-1 text-sm">Gemini reviews your allocations and suggests trade-offs.</p></div><button className="btn btn-gold btn-sm" onClick={() => void run()} disabled={busy}><Sparkles size={14} />{busy ? "Analysing…" : text ? "Re-run" : "Optimise"}</button></div>
+      {err && <p className="mt-4 rounded-xl p-3 text-xs font-semibold" style={{ background: "var(--rose-soft)", color: "var(--rose)" }}>{err}</p>}
+      {text && <div className="bubble bubble-bot mt-4 max-w-full">{text}</div>}
+    </section>
+  );
+}
+
+/* ───────────────────────────── Day plan (run of show) ───────────────────────────── */
+const ROS_TEMPLATE: Omit<RosItem, "id">[] = [
+  { time: "15:30", title: "Venue ready and vendor setup check", detail: "Decor, sound, catering counters and signage verified." },
+  { time: "17:00", title: "Guest arrival and welcome drinks", detail: "Ushers at the entrance, seating guidance, welcome music." },
+  { time: "18:00", title: "Main ceremony or programme begins", detail: "Hosts, photographer and music cues aligned." },
+  { time: "19:30", title: "Dinner service opens", detail: "Live counters open; dietary tables served first." },
+  { time: "21:00", title: "Performances and dance floor", detail: "Short sets, then open dancing." },
+  { time: "22:30", title: "Cake, toasts and thank-you", detail: "Key moments captured; farewell favours ready." },
+  { time: "23:30", title: "Wrap-up and vendor checkout", detail: "Settle balances and secure gifts." }
+];
+function DayPlanView({ state, extras, patch, notify, context }: { state: PlannerState; extras: Extras; patch: (p: Partial<Extras>) => void; notify: (m: string) => void; context: string }) {
+  const [form, setForm] = useState({ time: "18:00", title: "", detail: "" });
+  const [busy, setBusy] = useState(false);
+  const items = [...extras.ros].sort((a, b) => a.time.localeCompare(b.time));
+  const add = () => {
+    if (!form.title.trim()) return notify("Give the moment a title.");
+    patch({ ros: [...extras.ros, { id: uid(), time: form.time || "09:00", title: form.title.trim(), detail: form.detail.trim() }] });
+    setForm({ ...form, title: "", detail: "" }); notify("Moment added.");
+  };
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const text = await askAI(`Create a run-of-show for the event day of "${state.eventName}" (${state.eventType}, ${fmtDate(state.eventDate)}, ${state.location}, ${state.guests} guests). Reply with ONLY 8 to 12 lines, each exactly in the format: HH:MM | Title | One-sentence detail. Use 24-hour time in ascending order and add no other text.`, context);
+      const parsed = text.split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((x) => x.length >= 2 && /\d{1,2}[:.]\d{2}/.test(x[0]))
+        .map((x) => ({ id: uid(), time: normTime(x[0]), title: x[1].replace(/^\*+|\*+$/g, ""), detail: x[2] ?? "" }));
+      if (!parsed.length) throw new Error("The AI reply could not be read. Please try again.");
+      patch({ ros: parsed }); notify(`Generated ${parsed.length} moments.`);
+    } catch (e) { notify(e instanceof Error ? e.message : "Could not generate the schedule."); } finally { setBusy(false); }
+  };
+  return (
+    <>
+      <SectionHead title="Day plan" sub={`Hour-by-hour run of show for ${fmtDate(state.eventDate)}`} actions={<>
+        <button className="btn btn-gold btn-sm" onClick={() => void generate()} disabled={busy}><Sparkles size={14} />{busy ? "Generating…" : "Generate with AI"}</button>
+        <button className="btn btn-sm" onClick={() => { patch({ ros: ROS_TEMPLATE.map((r) => ({ ...r, id: uid() })) }); notify("Template loaded."); }}>Load template</button>
+        <button className="btn btn-sm" onClick={() => window.print()} disabled={!items.length}><Printer size={14} />Print</button>
+        <button className="btn btn-sm btn-danger" onClick={() => { patch({ ros: [] }); notify("Day plan cleared."); }} disabled={!items.length}>Clear</button></>} />
+      <div className="grid gap-5 xl:grid-cols-[.8fr_1.2fr]">
+        <section className="card card-pad no-print self-start">
+          <h2 className="display text-2xl">Add a moment</h2>
+          <div className="mt-5 grid gap-3">
+            <label className="label">Time<input type="time" className="field" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} /></label>
+            <label className="label">What happens<input className="field" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") add(); }} placeholder="Cake cutting" /></label>
+            <label className="label">Details<input className="field" value={form.detail} onChange={(e) => setForm({ ...form, detail: e.target.value })} placeholder="Who leads, what is needed" /></label>
+            <button className="btn btn-primary btn-block" onClick={add}><Plus size={16} />Add to schedule</button>
+          </div>
+        </section>
+        <section className="card card-pad">
+          {items.length ? items.map((r) => (
+            <div className="row items-start" key={r.id}>
+              <input type="time" className="field no-print" style={{ width: 118 }} value={r.time} aria-label={`Time for ${r.title}`} onChange={(e) => patch({ ros: extras.ros.map((x) => x.id === r.id ? { ...x, time: e.target.value } : x) })} />
+              <span className="tnum hidden text-sm font-bold print:inline">{r.time}</span>
+              <div className="min-w-0 flex-1"><p className="text-sm font-bold">{r.title}</p>{r.detail && <p className="muted mt-1 text-xs leading-5">{r.detail}</p>}</div>
+              <button className="icon-btn icon-btn-sm no-print" aria-label={`Delete ${r.title}`} onClick={() => patch({ ros: extras.ros.filter((x) => x.id !== r.id) })}><Trash2 size={14} /></button>
+            </div>
+          )) : <Empty title="No schedule yet" message="Generate an AI run of show, load a template, or add moments by hand." />}
+        </section>
+      </div>
+    </>
+  );
+}
+
+/* ───────────────────────────── Seating planner ───────────────────────────── */
+const SEATS = 8;
+function SeatingView({ extras, patch, notify }: { extras: Extras; patch: (p: Partial<Extras>) => void; notify: (m: string) => void }) {
+  const tables = extras.tables;
+  const seatable = extras.guests.filter((g) => g.rsvp !== "declined");
+  const need = (g: Guest) => 1 + g.plusOnes;
+  const at = (t: number) => seatable.filter((g) => extras.seating[g.id] === t);
+  const used = (t: number) => at(t).reduce((sum, g) => sum + need(g), 0);
+  const unseated = seatable.filter((g) => extras.seating[g.id] === undefined || extras.seating[g.id] >= tables);
+  const assign = (id: string, t: number) => { const next = { ...extras.seating }; if (t < 0) delete next[id]; else next[id] = t; patch({ seating: next }); };
+  const auto = () => {
+    const next: Record<string, number> = {}; const load = Array<number>(tables).fill(0); let t = 0;
+    for (const g of [...seatable].sort((a, b) => a.group.localeCompare(b.group))) {
+      let tries = 0;
+      while (tries < tables && load[t] + need(g) > SEATS) { t = (t + 1) % tables; tries++; }
+      if (tries >= tables) continue;
+      next[g.id] = t; load[t] += need(g);
+    }
+    patch({ seating: next });
+    const left = seatable.filter((g) => next[g.id] === undefined).length;
+    notify(left ? `Seated most guests. Add tables for ${left} more.` : "Guests seated by group.");
+  };
+  return (
+    <>
+      <SectionHead title="Seating planner" sub={`${seatable.length} guests to seat · ${SEATS} seats per table (plus-ones count as seats)`} actions={<>
+        <div className="tabs"><button className="tab" onClick={() => patch({ tables: Math.max(1, tables - 1) })} aria-label="Remove a table">−</button><span className="tab tnum">{tables} tables</span><button className="tab" onClick={() => patch({ tables: Math.min(60, tables + 1) })} aria-label="Add a table">+</button></div>
+        <button className="btn btn-gold btn-sm" onClick={auto} disabled={!seatable.length}><Sparkles size={14} />Auto-seat by group</button>
+        <button className="btn btn-sm" onClick={() => { patch({ seating: {} }); notify("Seating cleared."); }} disabled={!Object.keys(extras.seating).length}>Clear</button></>} />
+      {!seatable.length ? <Empty title="No guests to seat" message="Add guests in the Guests section first. Declined guests are not seated." /> : (
+        <div className="grid gap-5 xl:grid-cols-[.7fr_1.3fr]">
+          <section className="card card-pad self-start">
+            <h2 className="display text-2xl">Unseated <span className="muted text-base">({unseated.length})</span></h2>
+            <div className="mt-3">{unseated.length ? unseated.map((g) => (
+              <div className="row" key={g.id}><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold">{g.name}{g.plusOnes > 0 && <span className="muted font-semibold"> +{g.plusOnes}</span>}</p><p className="muted text-xs">{g.group}</p></div>
+                <select className="field" style={{ width: 120 }} value="" aria-label={`Assign ${g.name} to a table`} onChange={(e) => { if (e.target.value !== "") assign(g.id, Number(e.target.value)); }}><option value="">Assign…</option>{Array.from({ length: tables }, (_, i) => <option key={i} value={i}>Table {i + 1}</option>)}</select></div>
+            )) : <Empty title="Everyone has a seat" message="Nice. Review each table below." />}</div>
+          </section>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {Array.from({ length: tables }, (_, t) => {
+              const u = used(t);
+              return (
+                <section key={t} className="card p-5">
+                  <div className="flex items-center justify-between"><h3 className="display text-xl">Table {t + 1}</h3><span className={`chip ${u > SEATS ? "chip-rose" : u === SEATS ? "chip-teal" : "chip-gold"}`}>{u}/{SEATS} seats</span></div>
+                  <div className="track mt-3"><i style={{ width: `${Math.min(100, (u / SEATS) * 100)}%` }} /></div>
+                  <ul className="mt-3 space-y-1.5">{at(t).length ? at(t).map((g) => <li key={g.id} className="flex items-center justify-between gap-2 text-sm"><span className="truncate">{g.name}{g.plusOnes > 0 && ` +${g.plusOnes}`}</span><button className="icon-btn icon-btn-sm" aria-label={`Unseat ${g.name}`} onClick={() => assign(g.id, -1)}><X size={13} /></button></li>) : <li className="muted text-xs">Empty</li>}</ul>
+                </section>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ───────────────────────────── Invitations ───────────────────────────── */
+function InvitationsView({ state, extras, patch, notify, context }: { state: PlannerState; extras: Extras; patch: (p: Partial<Extras>) => void; notify: (m: string) => void; context: string }) {
+  const [lang, setLang] = useState("English");
+  const [tone, setTone] = useState("Warm");
+  const [host, setHost] = useState("");
+  const [busy, setBusy] = useState(false);
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const text = await askAI(`Write a ${tone.toLowerCase()} invitation in ${lang} for "${state.eventName}", a ${state.eventType.toLowerCase()} on ${fmtDate(state.eventDate)} at ${state.location}.${host ? ` Hosted by ${host}.` : ""} Keep it under 120 words, suitable for WhatsApp, and include the date, place and an RSVP line. Reply with the invitation text only.`, context);
+      patch({ invite: text.trim() }); notify("Invitation drafted.");
+    } catch (e) { notify(e instanceof Error ? e.message : "Could not draft the invitation."); } finally { setBusy(false); }
+  };
+  const copy = async () => { try { await navigator.clipboard.writeText(extras.invite); notify("Invitation copied."); } catch { notify("Copy failed. Select the text and copy manually."); } };
+  return (
+    <>
+      <SectionHead title="Invitation studio" sub="Draft a message with Gemini, edit it, then send it to your guests." />
+      <div className="grid gap-5 xl:grid-cols-[.8fr_1.2fr]">
+        <section className="card card-pad self-start">
+          <div className="grid gap-3">
+            <label className="label">Language<select className="field" value={lang} onChange={(e) => setLang(e.target.value)}>{["English", "Hindi", "Hinglish", "Marwari", "Gujarati"].map((l) => <option key={l}>{l}</option>)}</select></label>
+            <label className="label">Tone<select className="field" value={tone} onChange={(e) => setTone(e.target.value)}>{["Warm", "Formal", "Playful", "Traditional"].map((l) => <option key={l}>{l}</option>)}</select></label>
+            <label className="label">Hosted by (optional)<input className="field" value={host} onChange={(e) => setHost(e.target.value)} placeholder="The Sharma family" /></label>
+            <button className="btn btn-gold btn-block" onClick={() => void generate()} disabled={busy}><Sparkles size={16} />{busy ? "Drafting…" : extras.invite ? "Redraft invitation" : "Draft invitation"}</button>
+          </div>
+        </section>
+        <section className="card card-pad">
+          <h2 className="display text-2xl">Your invitation</h2>
+          <textarea className="field mt-4 min-h-56 leading-7" value={extras.invite} onChange={(e) => patch({ invite: e.target.value })} placeholder="Your drafted invitation appears here. You can edit it freely." aria-label="Invitation text" />
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button className="btn btn-primary btn-sm" disabled={!extras.invite.trim()} onClick={() => window.open(`https://wa.me/?text=${encodeURIComponent(extras.invite)}`, "_blank", "noopener")}><Send size={14} />Send on WhatsApp</button>
+            <button className="btn btn-sm" disabled={!extras.invite.trim()} onClick={() => void copy()}><Copy size={14} />Copy</button>
+            <button className="btn btn-sm" disabled={!extras.invite.trim()} onClick={() => { download("invitation.txt", extras.invite, "text/plain"); notify("Invitation downloaded."); }}><Download size={14} />Download</button>
+          </div>
+        </section>
+      </div>
+    </>
   );
 }
