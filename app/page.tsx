@@ -903,7 +903,7 @@ function AuthModal({ onClose, onSignedIn }: { onClose: () => void; onSignedIn: (
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [captcha, setCaptcha] = useState("");
-  const [captchaAnswer] = useState(() => String(Math.floor(Math.random() * 8) + 2));
+  const [captchaOperand] = useState(() => Math.floor(Math.random() * 8) + 2);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const submitJson = async (url: string, body: unknown) => {
@@ -917,7 +917,10 @@ function AuthModal({ onClose, onSignedIn }: { onClose: () => void; onSignedIn: (
     try { const data = await submitJson(url, body); if (data.profile) onSignedIn(data.profile); } catch (e) { setError(e instanceof Error ? e.message : fallback); } finally { setBusy(false); }
   };
   const submit = () => {
-    if (captcha !== captchaAnswer) return setError("CAPTCHA answer is incorrect.");
+  if (captcha.trim() !== String(1 + captchaOperand)) {
+    return setError("CAPTCHA answer is incorrect.");
+  }
+    
     void (stage === "login" ? run("/api/auth/login", { username, password }, "Login failed.") : run("/api/auth/register", { username, password, email, displayName: name }, "Registration failed."));
   };
   return (
@@ -927,7 +930,15 @@ function AuthModal({ onClose, onSignedIn }: { onClose: () => void; onSignedIn: (
         <label className="label">Username<input autoFocus autoComplete="username" className="field" value={username} onChange={(e) => setUsername(e.target.value)} /></label>
         {stage === "register" && <><label className="label">Display name<input className="field" value={name} onChange={(e) => setName(e.target.value)} /></label><label className="label">Email<input type="email" className="field" value={email} onChange={(e) => setEmail(e.target.value)} /></label></>}
         <label className="label">Password<input type="password" autoComplete={stage === "login" ? "current-password" : "new-password"} className="field" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-        <label className="label inset p-3">Quick check: what is 1 + {captchaAnswer}?<input className="field" inputMode="numeric" value={captcha} onChange={(e) => setCaptcha(e.target.value)} /></label>
+        <label className="label inset p-3">
+          Quick check: what is 1 + {captchaOperand}?
+          <input
+            className="field"
+            inputMode="numeric"
+            value={captcha}
+            onChange={(e) => setCaptcha(e.target.value)}
+          />
+        </label>
         <button type="submit" disabled={busy} className="btn btn-primary btn-block">{busy ? "Working…" : stage === "login" ? "Log in" : "Register"}</button>
       </form>
       <button disabled={busy} onClick={() => setStage(stage === "login" ? "register" : "login")} className="linkish mt-4 w-full text-center">{stage === "login" ? "New here? Create an account" : "Already registered? Log in"}</button>
