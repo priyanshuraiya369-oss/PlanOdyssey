@@ -13,7 +13,7 @@ export async function POST(request: Request) {
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Use a valid username, email, name, and password of at least 8 characters." }, { status: 400 });
   try {
-    const account = createAccount(parsed.data);
+    const account = await createAccount(parsed.data);
     return NextResponse.json({ ok: true, profile: account }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error && error.message.includes("UNIQUE") ? "That username or email is already registered. Try logging in." : "Registration failed. Please try again.";

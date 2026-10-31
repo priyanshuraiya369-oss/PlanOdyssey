@@ -24,7 +24,7 @@ export async function POST(request: Request) {
   const parsed = schema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "Enter your username and password." }, { status: 400 });
 
-  const account = findAccount(parsed.data.username);
+  const account = await findAccount(parsed.data.username);
   if (!account || !passwordMatches(parsed.data.password, account.passwordHash, account.salt)) {
     return NextResponse.json({ error: "Username or password is incorrect. Register as a new user if you do not have an account." }, { status: 401 });
   }
