@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight, Bell, CalendarDays, Check, ChevronRight, CircleHelp, Clock3, Command, Copy, CreditCard, Download,
-  FileText, Globe2, Heart, Home, Images, IndianRupee, ListChecks, LogOut, Mail, MapPin, Menu, MessageCircle, Moon,
+  FileText, Globe2, Heart, Home, Images, IndianRupee, ListChecks, LogOut, Mail, MapPin, MessageCircle, Moon,
   MoreHorizontal, Phone, Plus, Printer, RotateCcw, Search, Send, Settings2, Share2, Sparkles, Star, Sun,
   TicketCheck, Trash2, TrendingUp, Upload, UserRound, Users, X
 } from "lucide-react";
@@ -27,9 +27,6 @@ type Extras = {
   vstatus: Record<string, VStatus>; customVendors: Vendor[]; pins: string[]; theme: "light" | "dark"; alertsRead: boolean;
 };
 type Analytics = ReturnType<typeof getBudgetAnalytics>;
-type GoogleCredentialResponse = { credential: string };
-type GoogleAccounts = { id: { initialize: (options: { client_id: string; ux_mode: "popup"; callback: (response: GoogleCredentialResponse) => void }) => void; renderButton: (element: HTMLElement, options: { theme: string; size: string; width: number; text: string }) => void } };
-declare global { interface Window { google?: { accounts: GoogleAccounts } } }
 
 /* ───────────────────────────── Constants ───────────────────────────── */
 const PLAN_KEY = "planodyssey.current-plan";
@@ -218,7 +215,7 @@ export default function Dashboard() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette((p) => !p); }
-      if (e.key === "Escape") { setPalette(false); setAlertsOpen(false); setLightbox(null); setModal(null); }
+      if (e.key === "Escape") { setMobileNav(false); setPalette(false); setAlertsOpen(false); setLightbox(null); setModal(null); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -313,13 +310,13 @@ export default function Dashboard() {
 
       <div className="mx-auto flex min-h-screen max-w-[1600px]">
         {/* Sidebar */}
-        <aside className={`sidebar no-print fixed inset-y-0 left-0 z-50 flex w-[272px] flex-col px-4 py-6 transition-transform duration-300 lg:sticky lg:top-0 lg:z-10 lg:h-screen lg:translate-x-0 ${mobileNav ? "translate-x-0" : "-translate-x-full"}`}>
+        <aside className={`sidebar no-print fixed inset-y-0 left-0 z-[60] flex w-[272px] flex-col overflow-y-auto px-4 py-6 transition-transform duration-300 ${mobileNav ? "translate-x-0 shadow-2xl" : "-translate-x-full"}`} aria-hidden={!mobileNav}>
           <div className="mb-8 flex items-center justify-between px-2">
             <div className="flex items-center gap-3">
               <div className="grid h-10 w-10 place-items-center rounded-xl text-[#2a1b04]" style={{ background: "linear-gradient(180deg,#f3b44f,#e39a2a)" }}><Command size={19} /></div>
               <div><p className="display text-xl leading-none text-white">PlanOdyssey</p><p className="mt-1 text-[11px] text-white/50">Event command center</p></div>
             </div>
-            <button className="icon-btn icon-btn-sm lg:hidden" style={{ background: "transparent", borderColor: "rgba(255,255,255,.2)", color: "#fff" }} onClick={() => setMobileNav(false)} aria-label="Close menu"><X size={16} /></button>
+            <button className="icon-btn icon-btn-sm" style={{ background: "transparent", borderColor: "rgba(255,255,255,.2)", color: "#fff" }} onClick={() => setMobileNav(false)} aria-label="Close menu"><X size={16} /></button>
           </div>
           <nav className="space-y-1" aria-label="Workspace">
             {NAV.map(({ label, icon: Icon }) => (
@@ -344,12 +341,12 @@ export default function Dashboard() {
             </button>
           </div>
         </aside>
-        {mobileNav && <button aria-label="Close menu overlay" className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setMobileNav(false)} />}
+        {mobileNav && <button aria-label="Close menu overlay" className="fixed inset-0 z-[55] bg-black/50" onClick={() => setMobileNav(false)} />}
 
         {/* Content */}
         <section className="min-w-0 flex-1 px-4 pb-16 pt-3 sm:px-8 lg:px-10">
           <header className="topbar no-print mb-8 flex items-center gap-3">
-            <button className="icon-btn lg:hidden" onClick={() => setMobileNav(true)} aria-label="Open menu"><Menu size={19} /></button>
+            <button className="icon-btn" onClick={() => setMobileNav((o) => !o)} aria-label="Open or close the menu" aria-expanded={mobileNav}><MoreHorizontal size={20} /></button>
             <button className="search-fake" onClick={() => setPalette(true)} aria-label="Search and run commands"><Search size={16} /><span className="truncate">Search or jump to anything</span><kbd className="hidden sm:inline">Ctrl K</kbd></button>
             <div className="ml-auto flex items-center gap-2">
               <button className="icon-btn hidden sm:grid" onClick={toggleTheme} aria-label="Toggle theme">{extras.theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
@@ -863,7 +860,6 @@ function AuthModal({ onClose, onSignedIn }: { onClose: () => void; onSignedIn: (
   const [captchaAnswer] = useState(() => String(Math.floor(Math.random() * 8) + 2));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const googleButton = useRef<HTMLDivElement>(null);
   const submitJson = async (url: string, body: unknown) => {
     const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await response.json() as { error?: string; profile?: { name: string; email: string } };
@@ -878,28 +874,10 @@ function AuthModal({ onClose, onSignedIn }: { onClose: () => void; onSignedIn: (
     if (captcha !== captchaAnswer) return setError("CAPTCHA answer is incorrect.");
     void (stage === "login" ? run("/api/auth/login", { username, password }, "Login failed.") : run("/api/auth/register", { username, password, email, displayName: name }, "Registration failed."));
   };
-  useEffect(() => {
-    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-    if (!clientId || !googleButton.current) return;
-    const render = () => {
-      if (!window.google || !googleButton.current) return;
-      window.google.accounts.id.initialize({ client_id: clientId, ux_mode: "popup", callback: (r) => void run("/api/auth/google/credential", { credential: r.credential }, "Google sign-in failed.") });
-      googleButton.current.replaceChildren();
-      window.google.accounts.id.renderButton(googleButton.current, { theme: "outline", size: "large", width: 400, text: "signin_with" });
-    };
-    if (window.google) { render(); return; }
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client"; script.async = true; script.defer = true; script.onload = render;
-    document.head.appendChild(script);
-    return () => { script.onload = null; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   return (
-    <ModalShell title={stage === "login" ? "Welcome back" : "Create your account"} sub="Use Google for one-click access, or continue with a local PlanOdyssey account." onClose={onClose}>
+    <ModalShell title={stage === "login" ? "Welcome back" : "Create your account"} sub="Sign in with your username and password." onClose={onClose}>
       {error && <p className="mt-4 rounded-xl p-3 text-xs font-semibold" style={{ background: "var(--rose-soft)", color: "var(--rose)" }}>{error}</p>}
-      <div ref={googleButton} className="mt-5 flex min-h-10 justify-center" />
-      <div className="muted my-4 flex items-center gap-3 text-xs font-semibold"><span className="h-px flex-1" style={{ background: "var(--line-2)" }} />or<span className="h-px flex-1" style={{ background: "var(--line-2)" }} /></div>
-      <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+      <form className="mt-5 space-y-3" onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <label className="label">Username<input autoFocus autoComplete="username" className="field" value={username} onChange={(e) => setUsername(e.target.value)} /></label>
         {stage === "register" && <><label className="label">Display name<input className="field" value={name} onChange={(e) => setName(e.target.value)} /></label><label className="label">Email<input type="email" className="field" value={email} onChange={(e) => setEmail(e.target.value)} /></label></>}
         <label className="label">Password<input type="password" autoComplete={stage === "login" ? "current-password" : "new-password"} className="field" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
@@ -918,7 +896,7 @@ function SubscriptionModal({ onClose, onPaid }: { onClose: () => void; onPaid: (
   useEffect(() => { const i = window.setInterval(() => setSeconds((s) => s > 0 ? s - 1 : 0), 1000); return () => window.clearInterval(i); }, []);
   const plans = [
     { id: "free", name: "Free", price: "₹0", detail: "For trying the command center", items: ["1 active event", "50 guests", "Manual budget tracking", "Basic milestones", "Community support"] },
-    { id: "basic", name: "Basic", price: "₹499/mo", detail: "For personal celebrations", items: ["5 active events", "500 guests per event", "Gemini planning prompts", "Vendor quote comparison", "Google sign-in support"] },
+    { id: "basic", name: "Basic", price: "₹499/mo", detail: "For personal celebrations", items: ["5 active events", "500 guests per event", "Gemini planning prompts", "Vendor quote comparison", "Account profile sync"] },
     { id: "pro", name: "Pro", price: "₹1,499/mo", detail: "For complex, high-touch events", items: ["Unlimited events and guests", "Location-aware AI research", "Scenario budget modelling", "Hotel and vendor briefs", "Priority support and exports"] }
   ];
   return (
