@@ -27,3 +27,11 @@ export function scheduleMilestones<T extends { date: string }>(items: T[], event
   const span = Math.max(days - 2, 1);
   return items.map((m, i) => ({ ...m, date: iso(start + Math.min(days, Math.max(0, Math.round((span * (i + 1)) / items.length))) * DAY) }));
 }
+
+/** Scales category amounts down proportionally when AI suggestions add up to more than the budget. */
+export function fitCategories<T extends { amount: number }>(items: T[], budget: number): T[] {
+  const total = items.reduce((sum, c) => sum + c.amount, 0);
+  if (!items.length || !Number.isFinite(budget) || budget <= 0 || total <= budget) return items;
+  const factor = budget / total;
+  return items.map((c) => ({ ...c, amount: Math.floor(c.amount * factor) }));
+}

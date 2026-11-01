@@ -3,19 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Armchair, ArrowUpRight, Bell, CalendarDays, Check, ChevronRight, CircleHelp, Clock3, CloudSun, Command, Copy, CreditCard, Download,
-  FileText, Globe2, Heart, Home, Images, IndianRupee, ListChecks, LogOut, Mail, MapPin, MessageCircle, Moon,
+  FileText, Globe2, Heart, Home, Images, IndianRupee, ListChecks, Mail, MapPin, MessageCircle, Moon,
   MoreHorizontal, Phone, Plus, Printer, RotateCcw, Search, Send, Settings2, Share2, Sparkles, Star, Sun,
   TicketCheck, Trash2, TrendingUp, Upload, UserRound, Users, X
 } from "lucide-react";
 import { buildIcs, googleCalendarUrl } from "@/lib/calendar";
-import { scheduleMilestones } from "@/lib/schedule";
+import { fitCategories, scheduleMilestones } from "@/lib/schedule";
 import { buildPlanMilestones, formatCurrency, getBudgetAnalytics, getBudgetHealth, INITIAL_STATE } from "@/lib/planner-engine";
 import type { BudgetCategory, Currency, Milestone, PlannerState } from "@/lib/types";
 
 /* ───────────────────────────── Types ───────────────────────────── */
 type View = "Overview" | "Budget" | "Guests" | "Seating" | "Vendors" | "Timeline" | "Day plan" | "Checklist" | "Invitations" | "Documents" | "Inspiration";
-type Modal = "auth" | "subscription" | "chat" | "create-plan" | "settings" | "profile" | "feedback" | "help" | "share" | null;
-type AuthStage = "login" | "register";
+type Modal = "subscription" | "chat" | "create-plan" | "settings" | "profile" | "feedback" | "help" | "share" | null;
 type Rsvp = "confirmed" | "pending" | "declined";
 type Vendor = PlannerState["vendors"][number];
 type VStatus = "shortlisted" | "requested" | "booked";
@@ -192,8 +191,7 @@ export default function Dashboard() {
   const isDirty = useMemo(() => JSON.stringify(state) !== JSON.stringify(lastValidatedPlan), [state, lastValidatedPlan]);
   const patch = (p: Partial<Extras>) => setExtras((c) => ({ ...c, ...p }));
   const notify = useCallback((message: string) => { setToast(message); window.clearTimeout(toastTimer.current); toastTimer.current = window.setTimeout(() => setToast(""), 3200); }, []);
-  /* Open requested dashboard modals directly. Account sign-in is not required. */
-  const setModal = (m: Modal) => setModalState(m);
+  const setModal = setModalState;
 
   /* hydrate saved data after mount (avoids SSR mismatch) */
   useEffect(() => {
@@ -357,6 +355,11 @@ export default function Dashboard() {
           <div className="mt-auto space-y-1">
             <button onClick={toggleTheme} className="nav-item">{extras.theme === "light" ? <Moon size={18} /> : <Sun size={18} />}{extras.theme === "light" ? "Dark theme" : "Light theme"}</button>
             <button onClick={() => setModal("settings")} className="nav-item"><Settings2 size={18} />Settings</button>
+            <button onClick={() => setModal("profile")} className="mt-3 flex w-full items-center gap-3 rounded-2xl border border-white/10 bg-white/5 p-3 text-left text-white hover:bg-white/10">
+              <div className="grid h-10 w-10 place-items-center rounded-full text-[#2a1b04]" style={{ background: "#f3b44f" }}><UserRound size={19} /></div>
+              <div className="min-w-0"><p className="truncate text-sm font-bold">Guest</p><p className="text-xs text-white/55">Planning as a guest</p></div>
+              <MoreHorizontal size={17} className="ml-auto text-white/50" />
+            </button>
           </div>
         </aside>
         {mobileNav && <button aria-label="Close menu overlay" className="fixed inset-0 z-[55] bg-black/50" onClick={() => setMobileNav(false)} />}
@@ -417,6 +420,7 @@ export default function Dashboard() {
       {modal === "chat" && <ChatModal onClose={() => setModal(null)} onPaywall={() => setModal("subscription")} context={aiContext} />}
       {modal === "create-plan" && <CreatePlanModal onClose={() => setModal(null)} onCreated={(p, ros, tasks) => { applyGeneratedPlan(p, ros, tasks); setModal(null); }} />}
       {modal === "settings" && <SettingsModal theme={extras.theme} setTheme={(t) => patch({ theme: t })} onClose={() => setModal(null)} onReset={() => { patch({ ...DEFAULT_EXTRAS, theme: extras.theme }); setModal(null); notify("Guests, tasks, expenses and documents were reset."); }} />}
+      {modal === "profile" && <ProfileModal onClose={() => setModal(null)} />}
       {modal === "feedback" && <FeedbackModal onClose={() => setModal(null)} onDone={() => { setModal(null); notify("Thanks — your idea was added to the improvement queue."); }} />}
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
       {modal === "share" && <ShareModal onClose={() => setModal(null)} onJson={exportPlan} onBrief={exportBrief} notify={notify} onIcs={exportIcs} gcalUrl={gcalUrl} />}
@@ -869,56 +873,6 @@ function ShareModal({ onClose, onJson, onBrief, notify, onIcs, gcalUrl }: { onCl
   return <ModalShell title="Share & export" sub="Send your plan to family and vendors, or keep a copy." onClose={onClose}><div className="mt-6 space-y-3">{items.map(({ icon: Icon, label, run }) => <button key={label} onClick={() => void run()} className="btn btn-block justify-start"><Icon size={17} style={{ color: "var(--gold-deep)" }} />{label}</button>)}</div></ModalShell>;
 }
 
-function AuthModal({ onClose, onSignedIn }: { onClose: () => void; onSignedIn: (profile: { name: string; email: string }) => void }) {
-  const [stage, setStage] = useState<AuthStage>("login");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [captcha, setCaptcha] = useState("");
-  const [captchaOperand] = useState(() => Math.floor(Math.random() * 8) + 2);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const submitJson = async (url: string, body: unknown) => {
-    const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const data = await response.json() as { error?: string; profile?: { name: string; email: string } };
-    if (!response.ok) throw new Error(data.error || "The request failed.");
-    return data;
-  };
-  const run = async (url: string, body: unknown, fallback: string) => {
-    setBusy(true); setError("");
-    try { const data = await submitJson(url, body); if (data.profile) onSignedIn(data.profile); } catch (e) { setError(e instanceof Error ? e.message : fallback); } finally { setBusy(false); }
-  };
-  const submit = () => {
-  if (captcha.trim() !== String(1 + captchaOperand)) {
-    return setError("CAPTCHA answer is incorrect.");
-  }
-    
-    void (stage === "login" ? run("/api/auth/login", { username, password }, "Login failed.") : run("/api/auth/register", { username, password, email, displayName: name }, "Registration failed."));
-  };
-  return (
-    <ModalShell title={stage === "login" ? "Welcome back" : "Create your account"} sub="Sign in with your username and password." onClose={onClose}>
-      {error && <p className="mt-4 rounded-xl p-3 text-xs font-semibold" style={{ background: "var(--rose-soft)", color: "var(--rose)" }}>{error}</p>}
-      <form className="mt-5 space-y-3" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-        <label className="label">Username<input autoFocus autoComplete="username" className="field" value={username} onChange={(e) => setUsername(e.target.value)} /></label>
-        {stage === "register" && <><label className="label">Display name<input className="field" value={name} onChange={(e) => setName(e.target.value)} /></label><label className="label">Email<input type="email" className="field" value={email} onChange={(e) => setEmail(e.target.value)} /></label></>}
-        <label className="label">Password<input type="password" autoComplete={stage === "login" ? "current-password" : "new-password"} className="field" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-        <label className="label inset p-3">
-          Quick check: what is 1 + {captchaOperand}?
-          <input
-            className="field"
-            inputMode="numeric"
-            value={captcha}
-            onChange={(e) => setCaptcha(e.target.value)}
-          />
-        </label>
-        <button type="submit" disabled={busy} className="btn btn-primary btn-block">{busy ? "Working…" : stage === "login" ? "Log in" : "Register"}</button>
-      </form>
-      <button disabled={busy} onClick={() => setStage(stage === "login" ? "register" : "login")} className="linkish mt-4 w-full text-center">{stage === "login" ? "New here? Create an account" : "Already registered? Log in"}</button>
-    </ModalShell>
-  );
-}
-
 function SubscriptionModal({ onClose, onPaid }: { onClose: () => void; onPaid: () => void }) {
   const [plan, setPlan] = useState("pro");
   const [method, setMethod] = useState("UPI / QR");
@@ -926,7 +880,7 @@ function SubscriptionModal({ onClose, onPaid }: { onClose: () => void; onPaid: (
   useEffect(() => { const i = window.setInterval(() => setSeconds((s) => s > 0 ? s - 1 : 0), 1000); return () => window.clearInterval(i); }, []);
   const plans = [
     { id: "free", name: "Free", price: "₹0", detail: "For trying the command center", items: ["1 active event", "50 guests", "Manual budget tracking", "Basic milestones", "Community support"] },
-    { id: "basic", name: "Basic", price: "₹499/mo", detail: "For personal celebrations", items: ["5 active events", "500 guests per event", "Gemini planning prompts", "Vendor quote comparison", "Account profile sync"] },
+    { id: "basic", name: "Basic", price: "₹499/mo", detail: "For personal celebrations", items: ["5 active events", "500 guests per event", "Gemini planning prompts", "Vendor quote comparison", "Shareable plan exports"] },
     { id: "pro", name: "Pro", price: "₹1,499/mo", detail: "For complex, high-touch events", items: ["Unlimited events and guests", "Location-aware AI research", "Scenario budget modelling", "Hotel and vendor briefs", "Priority support and exports"] }
   ];
   return (
@@ -960,22 +914,14 @@ function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const update = (key: keyof typeof form, value: string) => setForm((c) => ({ ...c, [key]: value }));
   const submit = async () => {
     if (loading) return;
-    if (!form.eventName.trim() || !form.eventDate || !form.location.trim()) {
-      return setError("Add an event name, date and place to continue.");
-    }
-
-    // Prevent past event dates
-    if (form.eventDate < today()) {
-      return setError("Event date cannot be in the past. Please select today or a future date.");
-    }
-
-    setLoading(true);
-    setError("");
+    if (!form.eventName.trim() || !form.eventDate || !form.location.trim()) return setError("Add an event name, date and place to continue.");
+    setLoading(true); setError("");
     try {
       const response = await fetch("/api/plans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, budget: Number(form.budget), confirmedGuests: Number(form.confirmedGuests), unsureGuests: Number(form.unsureGuests) }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not create the plan.");
-      setResult(data.plan);
+      const plan = data.plan as NonNullable<typeof result>;
+      setResult({ ...plan, milestones: scheduleMilestones(plan.milestones ?? [], form.eventDate, { strict: true }), categories: fitCategories(plan.categories ?? [], Number(form.budget)) });
     } catch (e) { setError(e instanceof Error ? e.message : "Could not create the plan."); } finally { setLoading(false); }
   };
   if (result) {
@@ -1005,17 +951,7 @@ function CreatePlanModal({ onClose, onCreated }: { onClose: () => void; onCreate
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <label className="label sm:col-span-2">Event name<input className="field" value={form.eventName} onChange={(e) => update("eventName", e.target.value)} placeholder="Maya's Jaipur wedding" /></label>
         <label className="label">Event type<select className="field" value={form.eventType} onChange={(e) => update("eventType", e.target.value)}>{["Wedding", "Birthday", "Community", "Corporate", "Other"].map((t) => <option key={t}>{t}</option>)}</select></label>
-        <label className="label">
-          Event date
-          <input
-            type="date"
-            className="field"
-            min={today()}
-            value={form.eventDate}
-            onChange={(e) => update("eventDate", e.target.value)}
-            required
-          />
-        </label>
+        <label className="label">Event date<input type="date" className="field" value={form.eventDate} onChange={(e) => update("eventDate", e.target.value)} /></label>
         <label className="label">Budget<input type="number" min="1000" className="field" value={form.budget} onChange={(e) => update("budget", e.target.value)} /></label>
         <label className="label">Confirmed guests<input type="number" min="0" className="field" value={form.confirmedGuests} onChange={(e) => update("confirmedGuests", e.target.value)} /></label>
         <label className="label">Not-sure guests<input type="number" min="0" className="field" value={form.unsureGuests} onChange={(e) => update("unsureGuests", e.target.value)} /></label>
@@ -1082,6 +1018,14 @@ function SettingsModal({ theme, setTheme, onClose, onReset }: { theme: "light" |
         <label className="inset flex cursor-pointer items-center justify-between gap-3 p-4"><div className="flex items-center gap-3"><Bell size={18} style={{ color: "var(--gold-deep)" }} /><div><p className="text-sm font-bold">Planning reminders</p><p className="muted text-xs">Weekly runway nudges</p></div></div><input type="checkbox" className="tick" checked={reminders} onChange={(e) => setReminders(e.target.checked)} /></label>
         <button onClick={onReset} className="btn btn-block justify-start"><RotateCcw size={17} />Reset guests, tasks, expenses and documents</button>
       </div>
+    </ModalShell>
+  );
+}
+
+function ProfileModal({ onClose }: { onClose: () => void }) {
+  return (
+    <ModalShell title="Guest" sub="No account is needed. Your plan is saved on this device." onClose={onClose}>
+      <div className="inset mt-6 flex items-center gap-4 p-4"><div className="grid h-14 w-14 place-items-center rounded-full text-[#2a1b04]" style={{ background: "#f3b44f" }}><UserRound size={24} /></div><div><p className="font-bold">Guest</p><p className="muted mt-1 text-xs">Everything works without signing in</p></div></div>
     </ModalShell>
   );
 }
