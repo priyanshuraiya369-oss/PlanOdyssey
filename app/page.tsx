@@ -142,11 +142,13 @@ function SectionHead({ title, sub, actions }: { title: string; sub?: string; act
   return <div className="mb-6 flex flex-wrap items-end justify-between gap-4"><div><h1 className="display text-4xl leading-tight sm:text-[44px]">{title}</h1>{sub && <p className="muted mt-2 text-sm">{sub}</p>}</div>{actions && <div className="flex flex-wrap gap-2">{actions}</div>}</div>;
 }
 function ModalShell({ children, title, onClose, wide = false, sub }: { children: React.ReactNode; title: string; onClose: () => void; wide?: boolean; sub?: string }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { dialogRef.current?.focus(); }, []);
   return (
     <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div role="dialog" aria-modal="true" aria-label={title} className={`modal ${wide ? "modal-wide" : ""}`}>
+      <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="dialog-title" className={`modal outline-none ${wide ? "modal-wide" : ""}`}>
         <div className="flex items-start justify-between gap-4">
-          <div><h2 className="display text-3xl leading-tight">{title}</h2>{sub && <p className="muted mt-2 text-sm leading-6">{sub}</p>}</div>
+          <div><h2 id="dialog-title" className="display text-3xl leading-tight">{title}</h2>{sub && <p className="muted mt-2 text-sm leading-6">{sub}</p>}</div>
           <button className="icon-btn icon-btn-sm" onClick={onClose} aria-label="Close dialog"><X size={16} /></button>
         </div>
         {children}
@@ -329,9 +331,10 @@ export default function Dashboard() {
         </div>
       )}
 
+      <a href="#content" className="skip-link">Skip to main content</a>
       <div className="mx-auto flex min-h-screen max-w-[1600px]">
         {/* Sidebar */}
-        <aside className={`sidebar no-print fixed inset-y-0 left-0 z-[60] flex w-[272px] flex-col overflow-y-auto px-4 py-6 transition-transform duration-300 ${mobileNav ? "translate-x-0 shadow-2xl" : "-translate-x-full"}`} aria-hidden={!mobileNav}>
+        <aside aria-label="Sidebar" className={`sidebar no-print fixed inset-y-0 left-0 z-[60] flex w-[272px] flex-col overflow-y-auto px-4 py-6 transition-[transform,visibility] duration-300 ${mobileNav ? "translate-x-0 visible shadow-2xl" : "invisible -translate-x-full"}`}>
           <div className="mb-8 flex items-center justify-between px-2">
             <div className="flex items-center gap-3">
               <div className="grid h-10 w-10 place-items-center rounded-xl text-[#2a1b04]" style={{ background: "linear-gradient(180deg,#f3b44f,#e39a2a)" }}><Command size={19} /></div>
@@ -365,7 +368,7 @@ export default function Dashboard() {
         {mobileNav && <button aria-label="Close menu overlay" className="fixed inset-0 z-[55] bg-black/50" onClick={() => setMobileNav(false)} />}
 
         {/* Content */}
-        <section className="min-w-0 flex-1 px-4 pb-16 pt-3 sm:px-8 lg:px-10">
+        <section id="content" tabIndex={-1} className="min-w-0 flex-1 px-4 pb-16 pt-3 outline-none sm:px-8 lg:px-10">
           <header className="topbar no-print mb-8 flex items-center gap-3">
             <button className="icon-btn" onClick={() => setMobileNav((o) => !o)} aria-label="Open or close the menu" aria-expanded={mobileNav}><MoreHorizontal size={20} /></button>
             <button className="search-fake" onClick={() => setPalette(true)} aria-label="Search and run commands"><Search size={16} /><span className="truncate">Search or jump to anything</span><kbd className="hidden sm:inline">Ctrl K</kbd></button>
