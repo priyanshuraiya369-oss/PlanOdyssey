@@ -1,5 +1,13 @@
-node_modules
-.next
-.env*
-!.env.example
+# dependencies and build output
+node_modules/
+.next/
+out/
+dist/
+coverage/
+
+# secrets and local data
+.env*.local
 planodyssey.accounts.json
+.env
+.env.*
+!.env.example

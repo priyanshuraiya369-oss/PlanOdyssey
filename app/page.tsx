@@ -29,6 +29,7 @@ type Extras = {
   guests: Guest[]; tasks: Task[]; docs: Doc[]; expenses: Expense[]; done: Record<string, boolean>;
   vstatus: Record<string, VStatus>; customVendors: Vendor[]; pins: string[]; theme: "light" | "dark"; alertsRead: boolean;
   ros: RosItem[]; seating: Record<string, number>; tables: number; invite: string;
+  vchecks: Record<string, Record<string, boolean>>; ideas: string[];
 };
 type Analytics = ReturnType<typeof getBudgetAnalytics>;
 
@@ -64,7 +65,7 @@ const UTILITY: { label: string; icon: typeof Home; modal: Modal }[] = [
   { label: "Contact us", icon: Phone, modal: "help" }
 ];
 const DEFAULT_EXTRAS: Extras = {
-  guests: [], docs: [], expenses: [], done: {}, vstatus: {}, customVendors: [], pins: ["p1", "p5"], theme: "light", alertsRead: false, ros: [], seating: {}, tables: 10, invite: "",
+  guests: [], docs: [], expenses: [], done: {}, vstatus: {}, customVendors: [], pins: ["p1", "p5"], theme: "light", alertsRead: false, ros: [], seating: {}, tables: 10, invite: "", vchecks: {}, ideas: [],
   tasks: [
     { id: "t1", title: "Lock the venue and pay the booking advance", due: "", done: false },
     { id: "t2", title: "Send save-the-date messages", due: "", done: false },
@@ -391,7 +392,7 @@ export default function Dashboard() {
             {view === "Seating" && <SeatingView extras={extras} patch={patch} notify={notify} />}
             {view === "Day plan" && <DayPlanView state={state} extras={extras} patch={patch} notify={notify} context={aiContext} />}
             {view === "Invitations" && <InvitationsView state={state} extras={extras} patch={patch} notify={notify} context={aiContext} />}
-            {view === "Inspiration" && <InspirationView extras={extras} patch={patch} setLightbox={setLightbox} notify={notify} />}
+            {view === "Inspiration" && <InspirationView state={state} context={aiContext} extras={extras} patch={patch} setLightbox={setLightbox} notify={notify} />}
           </div>
         </section>
       </div>
@@ -703,6 +704,21 @@ function GuestsView({ state, extras, patch, headcount, notify }: { state: Planne
 }
 
 /* ───────────────────────────── Vendors ───────────────────────────── */
+const VENDOR_CHECKS = ["Written quote received", "Date and time confirmed", "Deposit and refund terms agreed", "Backup plan if they cancel", "Insurance or licence checked", "Final headcount shared"];
+function VendorChecklist({ vendor, extras, patch }: { vendor: Vendor; extras: Extras; patch: (p: Partial<Extras>) => void }) {
+  const [open, setOpen] = useState(false);
+  const mine = extras.vchecks[vendor.id] ?? {};
+  const done = VENDOR_CHECKS.filter((c) => mine[c]).length;
+  const toggle = (c: string) => patch({ vchecks: { ...extras.vchecks, [vendor.id]: { ...mine, [c]: !mine[c] } } });
+  return (
+    <div className="mt-4 border-t pt-3" style={{ borderColor: "var(--line)" }}>
+      <button className="linkish" aria-expanded={open} onClick={() => setOpen((o) => !o)}>{open ? "Hide" : "Show"} checklist ({done}/{VENDOR_CHECKS.length})</button>
+      {open && <ul className="mt-3 space-y-2">{VENDOR_CHECKS.map((c) => (
+        <li key={c}><label className="flex cursor-pointer items-start gap-2 text-xs leading-5"><input type="checkbox" className="tick mt-0.5" checked={!!mine[c]} onChange={() => toggle(c)} /><span className={mine[c] ? "done-text" : ""}>{c}</span></label></li>
+      ))}</ul>}
+    </div>
+  );
+}
 function VendorsView({ state, vendors, extras, patch, notify }: { state: PlannerState; vendors: Vendor[]; extras: Extras; patch: (p: Partial<Extras>) => void; notify: (m: string) => void }) {
   const [sort, setSort] = useState<"quote" | "rating">("rating");
   const [form, setForm] = useState({ vendor: "", fit: "", quote: "", rating: "4.5" });
@@ -744,6 +760,7 @@ function VendorsView({ state, vendors, extras, patch, notify }: { state: Planner
                   <div className="flex items-start justify-between gap-3"><h3 className="display text-xl leading-tight">{v.vendor}</h3>{status ? <span className={`chip ${status === "booked" ? "chip-teal" : "chip-gold"}`}>{status}</span> : v.recommended ? <span className="chip chip-gold">Recommended</span> : null}</div>
                   <p className="muted mt-1 flex items-center gap-1 text-xs"><Star size={12} fill="#e9a23b" stroke="#e9a23b" />{v.rating} · {v.fit}{v.category ? ` · ${v.category}` : ""}</p>
                   <p className="display tnum mt-4 text-3xl">{formatCurrency(v.quote)}</p>
+                  <VendorChecklist vendor={v} extras={extras} patch={patch} />
                   <div className="mt-4 flex flex-wrap gap-2">
                     <button className="btn btn-sm" onClick={() => status === "shortlisted" ? set(v.id, null, "Removed from shortlist.") : set(v.id, "shortlisted", `${v.vendor} shortlisted.`)}><Heart size={14} fill={status ? "currentColor" : "none"} />{status ? "Saved" : "Save"}</button>
                     <button className="btn btn-sm" disabled={status === "booked"} onClick={() => set(v.id, "requested", `Quote request prepared for ${v.vendor}.`)}>Request quote</button>
@@ -849,7 +866,17 @@ function DocumentsView({ extras, patch, notify, onBrief }: { extras: Extras; pat
 }
 
 /* ───────────────────────────── Inspiration ───────────────────────────── */
-function InspirationView({ extras, patch, setLightbox, notify }: { extras: Extras; patch: (p: Partial<Extras>) => void; setLightbox: (p: Photo) => void; notify: (m: string) => void }) {
+function InspirationView({ state, context, extras, patch, setLightbox, notify }: { state: PlannerState; context: string; extras: Extras; patch: (p: Partial<Extras>) => void; setLightbox: (p: Photo) => void; notify: (m: string) => void }) {
+  const [ideasBusy, setIdeasBusy] = useState(false);
+  const getIdeas = async () => {
+    setIdeasBusy(true);
+    try {
+      const text = await askAI(`Give 6 specific, personalised ideas for a ${state.eventType.toLowerCase()} in ${state.location} on ${fmtDate(state.eventDate)} for ${state.guests} guests with a budget of ${formatCurrency(state.budget, state.currency)}. Each idea must be one short line, practical and budget-aware. Reply with only the list, one idea per line.`, context);
+      const ideas = text.split("\n").map((l) => l.replace(/^[-*•\d.)\s]+/, "").trim()).filter(Boolean).slice(0, 6);
+      if (!ideas.length) throw new Error("No ideas came back. Please try again.");
+      patch({ ideas }); notify("Ideas updated for your event.");
+    } catch (e) { notify(e instanceof Error ? e.message : "Could not get ideas right now."); } finally { setIdeasBusy(false); }
+  };
   const tags = ["All", ...Array.from(new Set(PHOTOS.map((p) => p.tag)))];
   const [tag, setTag] = useState("All");
   const shown = PHOTOS.filter((p) => tag === "All" || p.tag === tag);
@@ -857,6 +884,13 @@ function InspirationView({ extras, patch, setLightbox, notify }: { extras: Extra
   return (
     <>
       <SectionHead title="Inspiration" sub={`${extras.pins.length} pinned to your moodboard`} actions={<div className="tabs" role="group" aria-label="Filter inspiration">{tags.map((t) => <button key={t} className="tab" aria-pressed={tag === t} onClick={() => setTag(t)}>{t}</button>)}</div>} />
+      <section className="card card-pad mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><h2 className="display text-2xl">Ideas for your event</h2><p className="muted mt-1 text-sm">Personalised to your event type, place, guest count and budget.</p></div>
+          <button className="btn btn-gold btn-sm" disabled={ideasBusy} onClick={() => void getIdeas()}><Sparkles size={14} />{ideasBusy ? "Thinking…" : extras.ideas.length ? "Refresh ideas" : "Get ideas"}</button>
+        </div>
+        {extras.ideas.length ? <ul className="mt-5 grid gap-3 sm:grid-cols-2">{extras.ideas.map((idea) => <li key={idea} className="inset p-4 text-sm leading-6">{idea}</li>)}</ul> : <p className="muted mt-4 text-sm">Press “Get ideas” to generate suggestions for this event.</p>}
+      </section>
       <div className="columns-1 gap-4 sm:columns-2 xl:columns-3">
         {shown.map((p, i) => (
           <div key={p.id} className="relative mb-4 break-inside-avoid">
